@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planta 3D, simulador de divisões</title>
+<meta name="description" content="Desenha divisões com as tuas medidas, portas e janelas, escolhe o estilo e vê o resultado em planta e em 3D.">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">▦</span>
+    <input id="projName" class="projname" aria-label="Nome do projeto" value="Projeto">
+  </div>
+  <div class="actions">
+    <button id="btnUndo" class="ghost" title="Desfazer">↶</button>
+    <button id="btnMenu" class="ghost" title="Projeto">☰</button>
+    <button id="btnAdd" class="primary">+ Divisão</button>
+  </div>
+</header>
+
+<nav class="bar">
+  <div class="chips" id="roomChips"></div>
+  <div class="seg" id="viewSeg"><button data-v="plan">Planta</button><button data-v="3d">3D</button></div>
+</nav>
+
+<div class="layout">
+  <main class="stage">
+    <div id="planHost" class="viewport"></div>
+    <div id="threeHost" class="viewport"></div>
+    <div class="overlay" id="overlay3d">
+      <div class="ov-row">
+        <button data-cam="geral">Geral</button>
+        <button data-cam="topo">De cima</button>
+        <button data-cam="porta" id="camPorta">Entrar pela porta</button>
+      </div>
+      <div class="ov-row">
+        <button id="btnDoors">Fechar portas</button>
+        <button id="btnWalls">Paredes</button>
+      </div>
+    </div>
+    <div class="hint" id="hint"></div>
+  </main>
+  <aside class="panel" id="panel"></aside>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="sheet" id="sheet"></div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
