@@ -149,7 +149,7 @@ export function newRoom(opts = {}) {
   return {
     id: uid(), name: opts.name || 'Divisão', type: opts.type || 'outro',
     w: opts.w ?? 3, l: opts.l ?? 3, h: opts.h ?? 2.6, x: opts.x ?? 0, z: opts.z ?? 0,
-    style: opts.style || 'calacatta', doors: opts.doors || [], windows: opts.windows || [], items: opts.items || [],
+    style: opts.style || 'calacatta', doors: opts.doors || [], windows: opts.windows || [], items: opts.items || [], auto: opts.auto ?? false,
   };
 }
 export const newDoor = (o = {}) => ({ id: uid(), wall: 'C', off: 0.3, width: 0.8, height: 2.0, kind: 'batente', swing: 'in', hinge: 'start', ...o });
@@ -476,6 +476,6 @@ export function exampleProject() {
   const s = newRoom({ name: 'Sala', type: 'sala', w: 4.2, l: 4.5, x: 1.7 + 3.2 + 2 * T, z: 0, style: 'japandi',
     doors: [newDoor({ wall: 'C', off: 0.3, width: 0.9, swing: 'in', hinge: 'start' })],
     windows: [newWindow({ wall: 'A', off: 1.0, width: 2.0, sill: 0.4, height: 1.8 }), newWindow({ wall: 'B', off: 1.5, width: 1.2 })] });
-  [wc, q, s].forEach(autoFurnish);
+  [wc, q, s].forEach(r => { autoFurnish(r); r.auto = true; });
   return { name: 'Exemplo', rooms: [wc, q, s] };
 }

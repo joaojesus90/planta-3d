@@ -38,8 +38,8 @@ export class PlanView {
     const xs = rooms.flatMap(r => [r.x, r.x + r.w]), zs = rooms.flatMap(r => [r.z, r.z + r.l]);
     if (tr) for (const [px, pz] of [[0, 0], [tr.iw, 0], [0, tr.ih], [tr.iw, tr.ih]]) { const q = traceToWorld(tr, px, pz); xs.push(q.x); zs.push(q.z); }
     const m = mode === 'house' ? 0.6 : 0.95;
-    const x0 = Math.min(...xs) - m, x1 = Math.max(...xs) + m, z1 = Math.max(...zs) + m;
-    const z0 = Math.min(...zs) - m - (Math.max(...zs) - Math.min(...zs) + 2 * m) * 0.12;   // room for the tool buttons
+    const x0 = Math.min(...xs) - m, x1 = Math.max(...xs) + m, span = Math.max(...zs) - Math.min(...zs) + 2 * m;
+    const z0 = Math.min(...zs) - m - span * 0.22, z1 = Math.max(...zs) + m + span * 0.08;   // room for the toolbar and the hint
     this.fit = { x0, z0, w: x1 - x0, h: z1 - z0 };
     const v = this.userView || this.fit;
     svg.setAttribute('viewBox', `${v.x0} ${v.z0} ${v.w} ${v.h}`);
@@ -133,6 +133,15 @@ export class PlanView {
 
   drawTool(svg) {
     const k = this.k, ext = this.ext || {};
+    if (ext.tool === 'photo' && ext.trace) {
+      const tr = ext.trace, C = [[0, 0], [tr.iw, 0], [tr.iw, tr.ih], [0, tr.ih]].map(([a, b]) => traceToWorld(tr, a, b));
+      el('polygon', { points: C.map(q => `${q.x},${q.z}`).join(' '), fill: 'rgba(217,72,15,.04)', stroke: '#d9480f', 'stroke-width': k * 0.035, 'stroke-dasharray': `${k * 0.15} ${k * 0.1}`, 'pointer-events': 'none' }, svg);
+      C.forEach((q, i) => {
+        const g = el('g', { 'data-ph': i, style: 'cursor:nwse-resize' }, svg);
+        el('circle', { cx: q.x, cy: q.z, r: k * 0.5, fill: 'transparent' }, g);
+        el('circle', { cx: q.x, cy: q.z, r: k * 0.2, fill: '#d9480f', stroke: '#fff', 'stroke-width': k * 0.05 }, g);
+      });
+    }
     if (ext.tool === 'calib') {
       const pts = ext.toolPts || [];
       if (pts.length === 2) el('line', { x1: pts[0].x, y1: pts[0].z, x2: pts[1].x, y2: pts[1].z, stroke: '#d9480f', 'stroke-width': k * 0.05 }, svg);
@@ -210,6 +219,30 @@ export class PlanView {
       band(w.wall, w.off, w.off + w.width, -T / 2, 0, { fill: '#fff', stroke: col, 'stroke-width': 0.01 });
       line(P(w.wall, w.off, -T / 4), P(w.wall, w.off + w.width, -T / 4), { stroke: col, 'stroke-width': 0.012 });
     }
+    // draggable areas (room view, or the selected room in the house view)
+    const active = this.mode === 'room' || this.sel?.roomId === r.id;
+    if (!active || this.ext?.tool === 'calib' || this.ext?.tool === 'photo') return;
+    const k = this.k;
+    for (const o of [...r.doors, ...r.windows]) {
+      const on = this.sel?.opId === o.id;
+      band(o.wall, o.off, o.off + o.width, -T - k * 0.12, Math.max(0.25, k * 0.35), { fill: on ? 'rgba(217,72,15,.16)' : 'rgba(47,111,143,.06)', stroke: on ? '#d9480f' : 'rgba(47,111,143,.35)',
+        'stroke-width': k * (on ? 0.035 : 0.02), 'stroke-dasharray': on ? '' : `${k * 0.08} ${k * 0.06}`, 'data-op': o.id, 'data-oroom': r.id, style: 'cursor:grab' });
+    }
+    const so = [...r.doors, ...r.windows].find(o => o.id === this.sel?.opId);
+    if (so && this.mode === 'house') this.drawOpLabels(r, so, svg, true);
+  }
+
+  drawOpLabels(r, op, svg, big) {
+    const k = this.k, fs = k * 0.36 * (big ? 1.15 : 0.8);
+    const Lw = wallLength(r, op.wall), a = op.off, b = Lw - op.off - op.width, [e0, e1] = { A: ['D', 'B'], C: ['D', 'B'], B: ['A', 'C'], D: ['A', 'C'] }[op.wall];
+    const o = k * (big ? 0.42 : 0.3);
+    const pos = (s) => ({ A: [r.x + s, r.z - o], C: [r.x + s, r.z + r.l + o + fs * 0.35], D: [r.x - o, r.z + s], B: [r.x + r.w + o, r.z + s] }[op.wall]);
+    const rot = (op.wall === 'B' || op.wall === 'D') ? -90 : 0;
+    const tx = (x, y, str, attrs) => { const t = el('text', { x, y, 'font-size': fs, 'text-anchor': 'middle', transform: rot ? `rotate(${rot} ${x} ${y})` : '', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': fs * 0.25, 'pointer-events': 'none', ...attrs }, svg); t.textContent = str; };
+    const col = big ? '#d9480f' : '#8b6b45';
+    if (a > 0.02) { const [x, y] = pos(a / 2); tx(x, y, big ? `${fmt(a)} ↔ ${e0}` : fmt(a), { fill: col, 'font-weight': big ? 700 : 400 }); }
+    if (b > 0.02) { const [x, y] = pos(op.off + op.width + b / 2); tx(x, y, big ? `${fmt(b)} ↔ ${e1}` : fmt(b), { fill: col, 'font-weight': big ? 700 : 400 }); }
+    const [x, y] = pos(op.off + op.width / 2); tx(x, y, fmt(op.width), { fill: op.sill !== undefined ? '#4f9fc4' : '#2f6f8f', 'font-weight': 700 });
   }
 
   drawItems(r, svg, interactive) {
@@ -281,14 +314,7 @@ export class PlanView {
     const L = (x, y, s) => { el('circle', { cx: x, cy: y, r: fs * 0.85, fill: '#2f6f8f' }, svg); tx(x, y + fs * 0.35, s, 0, { fill: '#fff', 'font-weight': 700 }); };
     L(r.x + r.w / 2, r.z - 0.75, 'A'); L(r.x + r.w + 0.4, r.z + r.l / 2, 'B'); L(r.x + r.w / 2, r.z + r.l + 0.4, 'C'); L(r.x - 0.78, r.z + r.l / 2, 'D');
     // opening distances
-    for (const op of [...r.doors, ...r.windows]) {
-      const Lw = wallLength(r, op.wall), a = op.off, b = Lw - op.off - op.width;
-      const pos = (s) => ({ A: [r.x + s, r.z - 0.16], C: [r.x + s, r.z + r.l + 0.13], D: [r.x - 0.1, r.z + s], B: [r.x + r.w + 0.1, r.z + s] }[op.wall]);
-      const rot = (op.wall === 'B' || op.wall === 'D') ? -90 : 0;
-      if (a > 0.04) { const [x, y] = pos(a / 2); tx(x, y, fmt(a), rot, { 'font-size': fs * 0.8, fill: '#8b6b45' }); }
-      if (b > 0.04) { const [x, y] = pos(op.off + op.width + b / 2); tx(x, y, fmt(b), rot, { 'font-size': fs * 0.8, fill: '#8b6b45' }); }
-      const [x, y] = pos(op.off + op.width / 2); tx(x, y, fmt(op.width), rot, { 'font-size': fs * 0.8, fill: op.sill !== undefined ? '#4f9fc4' : '#2f6f8f', 'font-weight': 700 });
-    }
+    for (const op of [...r.doors, ...r.windows]) this.drawOpLabels(r, op, svg, op.id === this.sel?.opId);
     // distances of the selected item to the walls
     const it = r.items.find(i => i.id === this.sel?.itemId);
     if (it) {
@@ -307,7 +333,7 @@ export class PlanView {
     try { this.svg.setPointerCapture(e.pointerId); } catch (err) { }
     this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.ptrs.size === 2) {
-      if (this.drag?.moved && (this.drag.kind === 'room' || this.drag.kind === 'item')) this.cb.changed();
+      if (this.drag?.moved && ['room', 'item', 'op', 'resize'].includes(this.drag.kind)) this.cb.changed({ kind: this.drag.kind, room: this.drag.r });
       this.drag = null; this.rectDraft = null;
       const [a, b] = [...this.ptrs.values()], ctm = this.svg.getScreenCTM();
       const m0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -317,11 +343,27 @@ export class PlanView {
     }
     if (this.ptrs.size > 2) return;
     const p = this.pt(e), tool = this.mode === 'house' ? this.ext?.tool : null;
+    if (!this.userView && this.fit) this.userView = { ...this.fit };   // keep the view still while editing
+    if (tool === 'photo' && this.ext?.trace) {
+      const tr = this.ext.trace, ph = e.target.closest('[data-ph]');
+      if (ph) {
+        const C = [[0, 0], [tr.iw, 0], [tr.iw, tr.ih], [0, tr.ih]], i = +ph.getAttribute('data-ph'), ap = C[(i + 2) % 4];
+        const aw = traceToWorld(tr, ap[0], ap[1]), cw = traceToWorld(tr, C[i][0], C[i][1]);
+        this.drag = { kind: 'phScale', tr, s0: tr.s, ap, aw, d0: Math.hypot(cw.x - aw.x, cw.z - aw.z), moved: false, sx: e.clientX, sy: e.clientY };
+      } else this.drag = { kind: 'phMove', tr, px: p.x, pz: p.y, ox: tr.x, oz: tr.z, moved: false, sx: e.clientX, sy: e.clientY };
+      return;
+    }
     const pan = (onTap) => { this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, v0: { ...this.curView() }, ctm: this.svg.getScreenCTM(), moved: false, onTap }; };
     const hEl = tool !== 'calib' && this.mode === 'house' && e.target.closest('[data-h]');
     if (hEl) {
       const r = this.project.rooms.find(o => o.id === this.sel?.roomId);
       if (r) { this.drag = { kind: 'resize', h: hEl.getAttribute('data-h'), r, orig: { x: r.x, z: r.z, w: r.w, l: r.l }, items: r.items.map(i => ({ x: i.x, z: i.z })), ops: [...r.doors, ...r.windows].map(o => o.off), moved: false, sx: e.clientX, sy: e.clientY }; return; }
+    }
+    const opEl = tool !== 'calib' && e.target.closest('[data-op]');
+    if (opEl) {
+      const r = this.project.rooms.find(o => o.id === opEl.getAttribute('data-oroom'));
+      const op = r && [...r.doors, ...r.windows].find(o => o.id === opEl.getAttribute('data-op'));
+      if (op) { this.drag = { kind: 'op', r, op, moved: false, sx: e.clientX, sy: e.clientY }; this.cb.selectOp?.(r.id, op.id); return; }
     }
     if (tool === 'calib') { this.drag = { kind: 'tap', sx: e.clientX, sy: e.clientY, p: { x: p.x, z: p.y }, moved: false }; return; }
     if (tool === 'rect') { this.drag = { kind: 'rect', p0: this.snapPt(p), moved: false, sx: e.clientX, sy: e.clientY }; return; }
@@ -355,6 +397,21 @@ export class PlanView {
       this.cb.dragging(); return;
     }
     const D = this.drag; if (!D) return;
+    if (D.kind === 'op' || D.kind === 'phMove' || D.kind === 'phScale') {
+      if (!D.moved && Math.hypot(e.clientX - D.sx, e.clientY - D.sy) < 4) return;
+      if (!D.moved && D.kind === 'op') this.cb.startDrag?.();
+      D.moved = true;
+      const p = this.pt(e);
+      if (D.kind === 'op') this.moveOpening(D.r, D.op, p.x - D.r.x, p.y - D.r.z);
+      if (D.kind === 'phMove') { D.tr.x = D.ox + p.x - D.px; D.tr.z = D.oz + p.y - D.pz; }
+      if (D.kind === 'phScale') {
+        const f = Math.hypot(p.x - D.aw.x, p.y - D.aw.z) / Math.max(1e-6, D.d0);
+        D.tr.s = Math.max(D.s0 * 0.05, D.s0 * f);
+        const t0 = traceToWorld({ ...D.tr, x: 0, z: 0 }, D.ap[0], D.ap[1]);
+        D.tr.x = D.aw.x - t0.x; D.tr.z = D.aw.z - t0.z;
+      }
+      this.cb.dragging(); return;
+    }
     if (D.kind === 'resize') {
       if (!D.moved && Math.hypot(e.clientX - D.sx, e.clientY - D.sy) < 4) return;
       if (!D.moved) this.cb.startDrag?.();
@@ -404,7 +461,9 @@ export class PlanView {
     const D = this.drag; this.drag = null;
     if (!D) return;
     if (D.kind === 'tap') { if (!D.moved) this.cb.toolPoint?.(D.p); return; }
-    if (D.kind === 'resize') { if (D.moved) { this.finishResize(D.r); this.cb.changed(); } return; }
+    if (D.kind === 'resize') { if (D.moved) { this.finishResize(D.r); this.cb.changed({ kind: 'resize', room: D.r }); } return; }
+    if (D.kind === 'op') { if (D.moved) this.cb.changed({ kind: 'op', room: D.r }); else this.cb.opTapped?.(); return; }
+    if (D.kind === 'phMove' || D.kind === 'phScale') { if (D.moved) this.cb.traceChanged?.(); return; }
     if (D.kind === 'pan') { if (!D.moved) D.onTap?.(); return; }
     if (D.kind === 'rect') {
       const r = this.rectDraft; this.rectDraft = null;
@@ -415,7 +474,18 @@ export class PlanView {
       } else { this.cb.dragging(); if (D.moved) this.cb.toast?.('Arrasta de um canto da divisão até ao canto oposto (mínimo 0,50 m).'); }
       return;
     }
-    if (D.moved) this.cb.changed();
+    if (D.moved) this.cb.changed({ kind: D.kind, room: D.r });
+  }
+
+  // Slide an opening along the walls: it follows the pointer and jumps to the nearest wall.
+  moveOpening(r, op, lx, lz) {
+    const cands = [['A', Math.abs(lz), lx], ['C', Math.abs(lz - r.l), lx], ['D', Math.abs(lx), lz], ['B', Math.abs(lx - r.w), lz]]
+      .filter(([w]) => wallLength(r, w) >= op.width).sort((a, b) => a[1] - b[1]);
+    if (!cands.length) return;
+    const [wall, , s] = cands[0], L = wallLength(r, wall);
+    let off = Math.round((s - op.width / 2) * 20) / 20;
+    if (off < 0.06) off = 0; if (L - op.width - off < 0.06) off = L - op.width;
+    op.wall = wall; op.off = r2(Math.min(Math.max(0, off), L - op.width));
   }
 }
 

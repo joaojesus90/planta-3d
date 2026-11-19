@@ -57,12 +57,19 @@ function sanitize(p) {
 
 // ---------- views ----------
 const plan = new PlanView($('#planHost'), {
-  selectRoom: id => { S.sel.roomId = id; renderPanel(); renderPlan(); renderView(); },
+  selectRoom: id => { if (id !== S.sel.roomId) S.sel.opId = null; S.sel.roomId = id; renderPanel(); renderPlan(); renderView(); },
   openRoom: id => openRoom(id),
-  selectItem: id => { S.sel.itemId = id; if (id) S.tab = 'mobiliario'; renderPanel(); renderPlan(); },
+  selectItem: id => { S.sel.itemId = id; S.sel.opId = null; if (id) S.tab = 'mobiliario'; renderPanel(); renderPlan(); },
+  selectOp: (rid, oid) => { S.sel.opId = oid; S.sel.itemId = null; if (S.mode === 'house') S.sel.roomId = rid; else S.tab = 'aberturas'; renderPanel(); renderPlan(); renderView(); },
   startDrag: () => snapshot(),
   dragging: () => renderPlan(),
-  changed: () => changed(),
+  changed: (info = {}) => {
+    const r = info.room;
+    if (r && info.kind === 'item') r.auto = false;
+    if (r && (info.kind === 'resize' || info.kind === 'op') && r.auto) autoFurnish(r);
+    changed();
+  },
+  traceChanged: () => { if (S.trace) S.trace.calibrated = true; saveTrace(); renderPanel(); },
   toast: m => toast(m, 3500),
   toolPoint: p => { S.toolPts.push(p); if (S.toolPts.length > 2) S.toolPts = [p]; renderPlan(); renderView(); if (S.toolPts.length === 2) askCalibration(); },
   rectDrawn: r => openWizard({ x: r.x0, z: r.z0, w: r.x1 - r.x0, l: r.z1 - r.z0 }),
@@ -97,40 +104,103 @@ function renderView() {
   $('#btnDoors').textContent = S.doorsOpen ? 'Fechar portas' : 'Abrir portas';
   $('#btnWalls').textContent = S.mode === 'house' ? (S.wallCut ? 'Paredes altas' : 'Paredes baixas') : (S.wallAll ? 'Esconder paredes da frente' : 'Mostrar todas as paredes');
   const hint = S.view === 'plan'
-    ? (S.mode === 'house' && S.tool === 'calib' ? (S.toolPts.length ? 'Agora toca no segundo ponto' : 'Toca no primeiro ponto de uma medida que conheces')
+    ? (S.mode === 'house' && S.tool === 'photo' ? 'Arrasta a foto · puxa um canto laranja para a redimensionar à proporção'
+      : S.sel.opId ? 'Arrasta a porta ou janela ao longo das paredes · as distâncias atualizam-se'
+      : S.mode === 'house' && S.tool === 'calib' ? (S.toolPts.length ? 'Agora toca no segundo ponto' : 'Toca no primeiro ponto de uma medida que conheces')
       : S.mode === 'house' && S.tool === 'rect' ? 'Arrasta de canto a canto para criar · toca numa divisão e puxa os cantos para a ajustar'
       : S.mode === 'house' && S.sel.roomId ? 'Puxa os cantos ou os lados para redimensionar · arrasta o meio para mover'
       : S.mode === 'house' ? 'Toca numa divisão para a mover ou redimensionar · toca duas vezes para abrir' : 'Arrasta os móveis · toca num móvel para o editar')
     : 'Arrasta para rodar · dois dedos para aproximar e deslocar';
-  $('#hint').textContent = hint;
+  const hn = $('#hint');
+  if (hn.textContent !== hint) { hn.textContent = hint; hn.style.opacity = 1; clearTimeout(hn._t); hn._t = setTimeout(() => hn.style.opacity = 0, 5000); }
   if (!v3d && S.view === '3d') $('#hint').textContent = 'O 3D não está disponível neste browser.';
 }
 
 function renderPlan() { plan.render(S.project, S.mode, S.roomId, S.sel, { trace: S.trace, tool: S.mode === 'house' ? S.tool : null, toolPts: S.toolPts }); renderPlanTools(); }
 
-function renderPlanTools() {
-  const el = $('#planTools'); if (!el) return;
-  const tr = S.mode === 'house' && S.trace;
-  let h = '';
-  if (tr) {
-    h += `<button data-tool="calib" class="${S.tool === 'calib' ? 'warm' : ''}">📏 Escala</button>`;
-    h += `<button data-tool="rect" class="${S.tool === 'rect' ? 'on' : ''}">▭ Divisão</button>`;
-    if (S.tool) h += `<button data-tool="none">✓ Terminar</button>`;
+function selRoomForTools() { return S.mode === 'room' ? room() : S.project.rooms.find(r => r.id === S.sel.roomId); }
+function selOp() { const r = selRoomForTools(); const o = r && [...r.doors, ...r.windows].find(x => x.id === S.sel.opId); return o ? { r, o, isDoor: r.doors.includes(o) } : null; }
+
+function opQuickHtml(o, isDoor, attr = 'data-oq') {
+  let h = `<b style="align-self:center;font-size:13px;white-space:nowrap;padding:0 4px;background:rgba(255,255,255,.92);border-radius:10px">${isDoor ? 'Porta' : 'Janela'} ${fmt(o.width)} m</b>`;
+  if (isDoor) {
+    h += `<button ${attr}="kind">${DOOR_KINDS[o.kind]} ▾</button>`;
+    if (o.kind !== 'vao') h += `<button ${attr}="hinge">${o.kind === 'batente' ? '↔ Dobradiça' : '↔ Lado'}</button>`;
+    if (o.kind === 'batente') h += `<button ${attr}="swing">${o.swing === 'in' ? '⤓ Abre p/ dentro' : '⤒ Abre p/ fora'}</button>`;
   }
-  h += `<button data-tool="fit" title="Ajustar vista">⤢</button>`;
-  el.innerHTML = h;
-  el.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
+  h += `<button ${attr}="narrow">− 10 cm</button><button ${attr}="wide">+ 10 cm</button><button ${attr}="del" style="color:#c83228">🗑</button>`;
+  return h;
+}
+// Quick changes to a door or window, used by the plan toolbar and the wizard.
+function opAction(r, o, a) {
+  const isDoor = r.doors.includes(o), L = wallLength(r, o.wall), K = Object.keys(DOOR_KINDS);
+  if (a === 'kind') o.kind = K[(K.indexOf(o.kind) + 1) % K.length];
+  if (a === 'hinge') o.hinge = o.hinge === 'start' ? 'end' : 'start';
+  if (a === 'swing') o.swing = o.swing === 'in' ? 'out' : 'in';
+  if (a === 'narrow' || a === 'wide') {
+    const c = o.off + o.width / 2;
+    o.width = r2(Math.min(L, Math.max(isDoor ? 0.5 : 0.3, o.width + (a === 'wide' ? 0.1 : -0.1))));
+    o.off = r2(Math.min(Math.max(0, c - o.width / 2), L - o.width));
+  }
+  if (a === 'del') { const list = isDoor ? r.doors : r.windows; list.splice(list.indexOf(o), 1); return 'deleted'; }
+}
+// Put a new door or window on the wall with the most free space, in the middle of the largest gap.
+function addOpening(r, isDoor) {
+  const width = isDoor ? 0.8 : 1.0;
+  let best = null;
+  for (const wall of ['C', 'A', 'B', 'D']) {
+    const L = wallLength(r, wall);
+    const used = [...r.doors, ...r.windows].filter(o => o.wall === wall).map(o => [o.off - 0.1, o.off + o.width + 0.1]).sort((a, b) => a[0] - b[0]);
+    let cur = 0; const gaps = [];
+    for (const [a, b] of used) { if (a > cur) gaps.push([cur, a]); cur = Math.max(cur, b); }
+    if (cur < L) gaps.push([cur, L]);
+    const bonus = isDoor && wall === 'C' ? 0.8 : 0;   // doors default to the bottom wall when there is room
+    for (const [a, b] of gaps) if (b - a >= Math.min(width, L) && (!best || b - a + bonus > best.score)) best = { wall, a, b, len: b - a, score: b - a + bonus };
+  }
+  if (!best) { toast('Não há espaço livre nas paredes.'); return null; }
+  const w = Math.min(width, best.len), off = isDoor ? best.a + Math.min(0.2, best.len - w) : best.a + (best.len - w) / 2;
+  const o = isDoor ? newDoor({ wall: best.wall, off: r2(off), width: w }) : newWindow({ wall: best.wall, off: r2(off), width: w });
+  (isDoor ? r.doors : r.windows).push(o);
+  return o;
+}
+
+function renderPlanTools() {
+  const host = $('#overlayPlan'); if (!host) return;
+  const tr = S.mode === 'house' && S.trace, r = selRoomForTools(), so = selOp();
+  let a = '';
+  if (tr) {
+    a += `<button data-tool="calib" class="${S.tool === 'calib' ? 'warm' : ''}">📏 Escala</button>`;
+    a += `<button data-tool="photo" class="${S.tool === 'photo' ? 'warm' : ''}">🖼 Foto</button>`;
+    a += `<button data-tool="rect" class="${S.tool === 'rect' ? 'on' : ''}">▭ Divisão</button>`;
+    if (S.tool) a += `<button data-tool="none">✓ Terminar</button>`;
+  }
+  if (r && S.tool !== 'calib' && S.tool !== 'photo') a += `<button data-tool="addDoor">+ Porta</button><button data-tool="addWin">+ Janela</button>`;
+  a += `<button data-tool="fit" title="Ajustar vista">⤢</button>`;
+  host.innerHTML = `<div class="ov-row scroll">${a}</div>` + (so ? `<div class="ov-row scroll">${opQuickHtml(so.o, so.isDoor)}</div>` : '');
+  host.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
     const t = b.dataset.tool;
     if (t === 'fit') { plan.fitView(); renderPlan(); return; }
+    if (t === 'addDoor' || t === 'addWin') {
+      snapshot(); const o = addOpening(r, t === 'addDoor'); if (!o) return;
+      S.sel.opId = o.id; if (r.auto) autoFurnish(r); changed();
+      toast('Arrasta-a ao longo das paredes. As distâncias aparecem enquanto arrastas.', 3500); return;
+    }
     setTool(t === 'none' || S.tool === t ? null : t);
+  });
+  host.querySelectorAll('[data-oq]').forEach(b => b.onclick = () => {
+    if (!so) return; snapshot();
+    if (opAction(so.r, so.o, b.dataset.oq) === 'deleted') S.sel.opId = null;
+    if (so.r.auto) autoFurnish(so.r);
+    changed();
   });
 }
 
 function setTool(t) {
-  S.tool = t; S.toolPts = [];
+  S.tool = t; S.toolPts = []; if (t === 'calib' || t === 'photo') S.sel.opId = null;
   if (t) { S.mode = 'house'; S.view = 'plan'; }
   changed({ save: false });
   if (t === 'calib') toast('Toca em dois pontos do esboço cuja distância real conheces (por exemplo, as pontas de uma parede).', 4500);
+  if (t === 'photo') toast('Arrasta a foto para a mover e puxa um canto laranja para a aumentar ou diminuir (mantém a proporção).', 5000);
   if (t === 'rect') toast('Arrasta de um canto de uma divisão até ao canto oposto. Dois dedos para aproximar.', 4500);
 }
 
@@ -216,7 +286,8 @@ function traceCard() {
   return `<div class="card"><b>📷 Esboço</b>
     <div class="status"><span>${t.calibrated ? '✅' : '🟡'}</span><span><b>1. Escala</b> ${t.calibrated ? 'acertada.' : 'por acertar: marca dois pontos de uma medida que conheças.'}</span></div>
     <div class="status"><span>${n ? '✅' : '🟡'}</span><span><b>2. Divisões</b> ${n ? `${n} desenhada${n > 1 ? 's' : ''}.` : 'arrasta de canto a canto por cima de cada divisão.'} Para acertar uma divisão ao esboço, toca nela e puxa os cantos ou os lados.</span></div>
-    <div class="btns"><button data-act="calib" class="${S.tool === 'calib' ? 'primary' : ''}">📏 Acertar escala</button><button data-act="drawRect" class="${S.tool === 'rect' ? 'primary' : ''}">▭ Desenhar divisão</button>${S.tool ? '<button data-act="toolOff">Terminar</button>' : ''}</div>
+    <p class="muted" style="margin:6px 0">Duas formas de pôr a foto à escala: <b>📏 Escala</b>, marcando uma medida que conheças, ou <b>🖼 Ajustar foto</b>, criando primeiro uma divisão com as medidas reais e encaixando a foto por cima dela (move e redimensiona à proporção pelos cantos).</p>
+    <div class="btns"><button data-act="calib" class="${S.tool === 'calib' ? 'primary' : ''}">📏 Escala</button><button data-act="photoTool" class="${S.tool === 'photo' ? 'primary' : ''}">🖼 Ajustar foto</button><button data-act="drawRect" class="${S.tool === 'rect' ? 'primary' : ''}">▭ Desenhar divisão</button>${S.tool ? '<button data-act="toolOff">Terminar</button>' : ''}</div>
     <label class="f" style="margin-top:10px">Visibilidade da foto<input type="range" min="0.15" max="1" step="0.05" value="${t.op}" data-tr="op"></label>
     <label class="f" style="margin-top:6px">Endireitar a foto (${fmt(t.rot)}°)<input type="range" min="-20" max="20" step="0.5" value="${t.rot}" data-tr="rot"></label>
     <div class="btns"><button data-act="traceShow">${t.show ? 'Ocultar foto' : 'Mostrar foto'}</button><button data-act="sketch">Trocar foto</button><button class="danger" data-act="traceDel">Remover foto</button></div></div>`;
@@ -289,8 +360,10 @@ function openingEditor(r, o, i, isDoor) {
   const L = wallLength(r, o.wall), [e0, e1] = WALL_INFO[o.wall].ends;
   const end = L - o.off - o.width, bad = o.off < -0.001 || end < -0.001;
   const wallOpts = Object.entries(WALL_INFO).map(([k, v]) => `<option value="${k}" ${o.wall === k ? 'selected' : ''}>${v.label}, ${fmt(wallLength(r, k))} m</option>`).join('');
-  let h = `<div class="card" data-op="${o.id}" data-door="${isDoor ? 1 : 0}">
-    <div class="row" style="justify-content:space-between"><b style="flex:0;white-space:nowrap">${isDoor ? 'Porta' : 'Janela'} ${i + 1}</b><button class="btn danger" style="flex:0" data-act="delOp">Remover</button></div>
+  const on = S.sel.opId === o.id || (W && W.selOp === o.id);
+  let h = `<div class="card ${on ? 'sel' : ''}" data-op="${o.id}" data-door="${isDoor ? 1 : 0}">
+    <div class="row" style="justify-content:space-between"><div style="flex:1"><b>${isDoor ? 'Porta' : 'Janela'} ${i + 1}</b><br><small class="muted">${isDoor ? DOOR_KINDS[o.kind] + ' · ' : ''}parede ${o.wall} · ${fmt(o.width)} m · a ${fmt(o.off)} m da ${e0} e ${fmt(end)} m da ${e1}</small></div><button class="btn danger" style="flex:0" data-act="delOp">Remover</button></div>
+    <details ${on || bad ? 'open' : ''} style="margin-top:6px"><summary class="muted" style="cursor:pointer">Ajustar ao centímetro</summary>
     <div class="row" style="margin-top:6px"><label class="f">Parede<select data-f="wall">${wallOpts}</select></label>
     ${isDoor ? `<label class="f">Tipo<select data-f="kind">${Object.entries(DOOR_KINDS).map(([k, v]) => `<option value="${k}" ${o.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>` : ''}</div>
     <div class="row" style="margin-top:6px">${inputM('Largura', 'width', o.width)}${isDoor ? inputM('Altura', 'height', o.height) : inputM('Altura da janela', 'height', o.height)}</div>
@@ -301,6 +374,7 @@ function openingEditor(r, o, i, isDoor) {
   if (isDoor && (o.kind === 'correr_emb' || o.kind === 'correr_ext')) h += `<div class="row" style="margin-top:6px">
       <label class="f">Desliza para o lado da<select data-f="hinge"><option value="start" ${o.hinge === 'start' ? 'selected' : ''}>Parede ${e0}</option><option value="end" ${o.hinge === 'end' ? 'selected' : ''}>Parede ${e1}</option></select></label><span></span></div>`;
   if (!isDoor) h += `<div class="row" style="margin-top:6px">${inputM('Altura do peitoril (chão até à janela)', 'sill', o.sill)}<span></span></div>`;
+  h += '</details>';
   if (bad) h += `<p class="warn">Não cabe nesta parede: a soma das distâncias e da largura tem de dar ${fmt(L)} m.</p>`;
   if (isDoor && o.kind === 'correr_emb') {
     const room0 = o.hinge === 'end' ? end : o.off;
@@ -310,11 +384,11 @@ function openingEditor(r, o, i, isDoor) {
 }
 
 function aberturasTab(r) {
-  return `<h3>Portas</h3>${r.doors.map((d, i) => openingEditor(r, d, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
+  return `<p class="muted">Na <b>Planta</b>, arrasta cada porta ou janela ao longo das paredes: as distâncias às paredes vão aparecendo. Toca numa para mudar o tipo, o lado de abertura ou a largura.</p><h3>Portas</h3>${r.doors.map((d, i) => openingEditor(r, d, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
     <div class="btns"><button data-act="addDoor">+ Adicionar porta</button></div>
     <h3>Janelas</h3>${r.windows.map((w, i) => openingEditor(r, w, i, false)).join('') || '<p class="muted">Sem janelas.</p>'}
     <div class="btns"><button data-act="addWin">+ Adicionar janela</button></div>
-    <p class="muted">Depois de mudares portas ou janelas, usa “Redistribuir mobiliário” no separador Medidas se quiseres que eu volte a arrumar a divisão.</p>`;
+    <p class="muted">${r.auto ? 'O mobiliário reorganiza-se sozinho quando mudas portas ou janelas.' : 'Se quiseres que eu volte a arrumar os móveis, usa “Redistribuir” no separador Mobiliário.'}</p>`;
 }
 
 function themesHtml(cur) {
@@ -342,7 +416,9 @@ function mobiliarioTab(r) {
       ${bad ? '<p class="warn">Esta peça choca com outra, ou ocupa a passagem de uma porta ou uma janela.</p>' : ''}</div>`;
   }
   h += `<h3>Nesta divisão</h3>${r.items.map(i => `<div class="list-item ${i.id === S.sel.itemId ? 'on' : ''}" data-item="${i.id}"><span>${CATALOG[i.kind].label}</span><small>${fmt(i.w)} × ${fmt(i.d)} m</small></div>`).join('') || '<p class="muted">Sem móveis.</p>'}
-    <div class="btns"><button data-act="refurnish">Redistribuir automaticamente</button><button data-act="clearItems" class="danger">Remover tudo</button></div>
+    <div class="card" style="margin-top:8px">${r.auto ? '✅ <b>Arrumação automática ligada</b><br><small class="muted">Os móveis reorganizam-se sozinhos quando mudas paredes, portas ou janelas. Desliga-se quando mexes num móvel.</small><div class="btns"><button data-act="autoOff">Desligar</button></div>'
+      : '🟡 <b>Arrumação automática desligada</b><br><small class="muted">Os móveis ficam onde os puseste.</small><div class="btns"><button data-act="autoOn">Voltar a arrumar e ligar</button></div>'}</div>
+    <div class="btns"><button data-act="refurnish">Redistribuir agora</button><button data-act="clearItems" class="danger">Remover tudo</button></div>
     <p class="muted">Na planta podes arrastar cada peça. As peças a vermelho chocam com outra ou com a passagem de uma porta.</p>`;
   return h;
 }
@@ -356,7 +432,7 @@ function confirmTwice(btn, key, label) {
 }
 
 function bindOpenings(container, r, onDone) {
-  container.querySelectorAll('[data-op]').forEach(card => {
+  container.querySelectorAll('.card[data-op]').forEach(card => {
     const isDoor = card.dataset.door === '1';
     const list = isDoor ? r.doors : r.windows;
     const o = list.find(x => x.id === card.dataset.op);
@@ -403,6 +479,7 @@ function bindPanel(p) {
       if (a === 'add') openWizard();
       if (a === 'sketch') { const fi = $('#sketchInput'); fi.value = ''; fi.click(); }
       if (a === 'calib') setTool(S.tool === 'calib' ? null : 'calib');
+      if (a === 'photoTool') setTool(S.tool === 'photo' ? null : 'photo');
       if (a === 'drawRect') setTool(S.tool === 'rect' ? null : 'rect');
       if (a === 'toolOff') setTool(null);
       if (a === 'traceShow') { S.trace.show = !S.trace.show; saveTrace(); changed({ save: false }); }
@@ -410,16 +487,18 @@ function bindPanel(p) {
       if (a === 'example') { snapshot(); S.project = exampleProject(); changed(); }
       if (a === 'allStyle') { S.tab = 'estilo'; if (S.project.rooms[0]) openRoom(S.project.rooms[0].id); }
       if (!r) return;
-      if (a === 'refurnish') { snapshot(); autoFurnish(r); S.sel.itemId = null; changed(); toast('Mobiliário redistribuído'); }
+      if (a === 'refurnish') { snapshot(); autoFurnish(r); r.auto = true; S.sel.itemId = null; changed(); toast('Mobiliário redistribuído'); }
       if (a === 'delRoom' && confirmTwice(b, 'delRoom')) { snapshot(); S.project.rooms.splice(S.project.rooms.indexOf(r), 1); openHouse(); save(); }
       if (a === 'dupRoom') { snapshot(); const c = JSON.parse(JSON.stringify(r)); c.id = uid(); c.name += ' (cópia)'; c.x = r2(Math.max(...S.project.rooms.map(q => q.x + q.w)) + T); [c.items, c.doors, c.windows].forEach(l => l.forEach(i => i.id = uid())); S.project.rooms.push(c); openRoom(c.id); save(); }
-      if (a === 'addDoor') { snapshot(); const L = wallLength(r, 'C'); r.doors.push(newDoor({ wall: 'C', off: r2(Math.max(0, Math.min(0.2, L - 0.8))), width: Math.min(0.8, L) })); changed(); }
-      if (a === 'addWin') { snapshot(); const L = wallLength(r, 'A'); r.windows.push(newWindow({ wall: 'A', width: Math.min(1, L), off: r2(Math.max(0, (L - Math.min(1, L)) / 2)) })); changed(); }
+      if (a === 'addDoor' || a === 'addWin') { snapshot(); const o = addOpening(r, a === 'addDoor'); if (o) { S.sel.opId = o.id; if (r.auto) autoFurnish(r); changed(); } }
+      if (a === 'autoOn') { snapshot(); r.auto = true; autoFurnish(r); changed(); }
+      if (a === 'autoOff') { r.auto = false; save(); renderPanel(); }
       if (a === 'styleAll') { snapshot(); S.project.rooms.forEach(x => x.style = r.style); changed(); toast('Estilo aplicado a todas as divisões'); }
-      if (a === 'addItem') { snapshot(); const it = addItemAuto(r, $('#addKind').value); S.sel.itemId = it.id; changed(); }
-      if (a === 'clearItems' && confirmTwice(b, 'clear')) { snapshot(); r.items = []; S.sel.itemId = null; changed(); }
+      if (a === 'addItem') { snapshot(); r.auto = false; const it = addItemAuto(r, $('#addKind').value); S.sel.itemId = it.id; changed(); }
+      if (a === 'clearItems' && confirmTwice(b, 'clear')) { snapshot(); r.auto = false; r.items = []; S.sel.itemId = null; changed(); }
       const it = r.items.find(i => i.id === S.sel.itemId);
       if (it) {
+        if (['rot', 'flip', 'dupItem', 'delItem'].includes(a)) r.auto = false;
         if (a === 'rot') { snapshot(); it.rot = (it.rot + 90) % 360; const q = itemRect(it), hw = (q.x1 - q.x0) / 2, hd = (q.z1 - q.z0) / 2; it.x = r2(Math.min(r.w - hw, Math.max(hw, it.x))); it.z = r2(Math.min(r.l - hd, Math.max(hd, it.z))); changed(); }
         if (a === 'flip') { snapshot(); it.flip = !it.flip; changed(); }
         if (a === 'dupItem') { snapshot(); const c = addItemAuto(r, it.kind); c.w = it.w; c.d = it.d; S.sel.itemId = c.id; changed(); }
@@ -440,10 +519,12 @@ function bindPanel(p) {
       else if (['w', 'l', 'h'].includes(f)) {
         r[f] = r2(Math.max(0.5, num(v)));
         r.items = r.items.filter(i => { const q = itemRect(i); return q.x1 <= r.w + 0.01 && q.z1 <= r.l + 0.01; });
+        if (r.auto) autoFurnish(r);
       }
       else if (f === 'x' || f === 'z') r[f] = r2(num(v));
       else {
         const it = r.items.find(i => i.id === S.sel.itemId); if (!it) return;
+        r.auto = false;
         if (f === 'iw') it.w = r2(Math.max(0.1, num(v)));
         if (f === 'id') it.d = r2(Math.max(0.1, num(v)));
         const q = itemRect(it), dx = q.x1 - q.x0, dz = q.z1 - q.z0;
@@ -453,69 +534,90 @@ function bindPanel(p) {
       changed();
     };
   });
-  bindOpenings(p, r, () => changed());
+  bindOpenings(p, r, () => { if (r.auto) autoFurnish(r); changed(); });
 }
 
 // ---------- wizard ----------
 let W = null;
-const STEPS = ['Tipo', 'Medidas', 'Portas', 'Janelas', 'Estilo'];
+const STEPS_FULL = ['Tipo', 'Medidas', 'Portas e janelas', 'Estilo'];
+const STEPS_QUICK = ['Tipo e estilo'];
 function openWizard(pre) {
   const n = S.project.rooms.length + 1;
-  W = { step: 0, auto: true, draft: newRoom({ type: 'wc', w: 2, l: 2.5, style: S.project.rooms.at(-1)?.style || 'calacatta', doors: [newDoor({ wall: 'C', off: 0.2, width: 0.8 })] }) };
+  W = { step: 0, auto: true, steps: pre ? STEPS_QUICK : STEPS_FULL, draft: newRoom({ type: 'wc', w: 2, l: 2.5, style: S.project.rooms.at(-1)?.style || 'calacatta' }) };
   W.draft.name = ''; W.n = n;
   if (pre) {
     const q = v => Math.round(v * 20) / 20;
     Object.assign(W.draft, { x: r2(pre.x), z: r2(pre.z), w: q(pre.w), l: q(pre.l) });
     W.keepPos = true; W.measured = { w: q(pre.w), l: q(pre.l) };
-    W.draft.doors = [newDoor({ wall: 'C', off: r2(Math.max(0, Math.min(0.2, W.draft.w - 0.8))), width: Math.min(0.8, W.draft.w) })];
   }
+  const o = addOpening(W.draft, true); if (o) W.selOp = o.id;
   renderWizard(); $('#modal').hidden = false;
 }
 function closeModal() { $('#modal').hidden = true; W = null; }
 function wizValid() {
-  const d = W.draft;
-  if (W.step === 1 && (d.w < 0.6 || d.l < 0.6)) return 'As medidas têm de ter pelo menos 0,60 m.';
-  if (W.step === 2 || W.step === 3) {
+  const d = W.draft, st = W.steps[W.step];
+  if (st === 'Medidas' && (d.w < 0.6 || d.l < 0.6)) return 'As medidas têm de ter pelo menos 0,60 m.';
+  if (st === 'Portas e janelas') {
     for (const o of [...d.doors, ...d.windows]) { const L = wallLength(d, o.wall); if (o.off < -0.001 || o.off + o.width > L + 0.001) return 'Há uma porta ou janela que não cabe na parede escolhida.'; }
   }
   return null;
 }
 function renderWizard() {
-  const d = W.draft, sh = $('#sheet');
-  let body = '';
-  if (W.step === 0) body = `<p class="muted">Que divisão queres desenhar?</p>
-    <div class="typegrid">${Object.entries(ROOM_TYPES).map(([k, v]) => `<button data-type="${k}" class="${d.type === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
+  const d = W.draft, sh = $('#sheet'), st = W.steps[W.step], last = W.step === W.steps.length - 1;
+  const typeHtml = `<div class="typegrid">${Object.entries(ROOM_TYPES).map(([k, v]) => `<button data-type="${k}" class="${d.type === k ? 'on' : ''}">${v.label}</button>`).join('')}</div>
     <label class="f" style="margin-top:12px">Nome (opcional)<input id="wName" value="${esc(d.name)}" placeholder="${esc(ROOM_TYPES[d.type].label)}"></label>`;
-  if (W.step === 1) body = `<p class="muted">Medidas interiores, de parede a parede. A parede A fica em cima na planta, B à direita, C em baixo e D à esquerda.</p>
-    <div class="row">${inputM('Largura (paredes A e C)', 'w', d.w)}${inputM('Comprimento (paredes B e D)', 'l', d.l)}</div>
-    <div class="row" style="margin-top:8px">${inputM('Pé-direito', 'h', d.h)}<span></span></div>
-    ${W.measured ? `<p class="muted">📏 Medido no esboço: ${fmt(W.measured.w)} × ${fmt(W.measured.l)} m. Corrige para as medidas reais, se as souberes.</p>` : ''}<div class="wizprev" id="wPrev"></div>`;
-  if (W.step === 2) body = `<p class="muted">Diz-me em que parede fica cada porta e a que distância está das paredes de cada lado. A segunda distância calcula-se sozinha.</p>
-    <div class="wizprev" id="wPrev"></div>${d.doors.map((o, i) => openingEditor(d, o, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
-    <div class="btns"><button data-w="addDoor">+ Adicionar porta</button></div>`;
-  if (W.step === 3) body = `<p class="muted">Janelas são opcionais, mas ajudam a arrumar os móveis (nada alto fica à frente delas).</p>
-    <div class="wizprev" id="wPrev"></div>${d.windows.map((o, i) => openingEditor(d, o, i, false)).join('') || '<p class="muted">Sem janelas.</p>'}
-    <div class="btns"><button data-w="addWin">+ Adicionar janela</button></div>`;
-  if (W.step === 4) body = `<p class="muted">Escolhe o estilo. Podes mudar mais tarde.</p>${themesHtml(d.style)}
-    <p class="muted" style="margin-top:8px">${styleById(d.style).desc}</p>
+  const styleHtml = `${themesHtml(d.style)}<p class="muted" style="margin-top:8px">${styleById(d.style).desc}</p>
     <label class="row" style="margin-top:10px;gap:8px"><input type="checkbox" id="wAuto" ${W.auto ? 'checked' : ''} style="flex:0;width:20px;height:20px"> <span>Colocar mobiliário automaticamente (podes editar depois)</span></label>`;
-  sh.innerHTML = `<h2>Nova divisão</h2><div class="steps">${STEPS.map((s, i) => `<i class="${i <= W.step ? 'on' : ''}"></i>`).join('')}</div>
-    <div class="muted" style="margin-bottom:8px"><b>${W.step + 1}. ${STEPS[W.step]}</b></div>${body}<p class="warn" id="wErr"></p>
-    <div class="navbtns"><button data-w="${W.step ? 'back' : 'cancel'}">${W.step ? 'Voltar' : 'Cancelar'}</button><button class="primary" data-w="${W.step === STEPS.length - 1 ? 'create' : 'next'}">${W.step === STEPS.length - 1 ? 'Criar divisão' : 'Seguinte'}</button></div>`;
+  let body = '';
+  if (st === 'Tipo') body = `<p class="muted">Que divisão queres desenhar?</p>${typeHtml}`;
+  if (st === 'Tipo e estilo') body = `<p class="muted">📏 Desenhada no esboço: <b>${fmt(d.w)} × ${fmt(d.l)} m</b>. Depois podes afinar puxando os cantos, e arrastar a porta para o sítio certo.</p>${typeHtml}<h3>Estilo</h3>${styleHtml}`;
+  if (st === 'Medidas') body = `<p class="muted">Medidas interiores, de parede a parede. A parede A fica em cima na planta, B à direita, C em baixo e D à esquerda.</p>
+    <div class="row">${inputM('Largura (paredes A e C)', 'w', d.w)}${inputM('Comprimento (paredes B e D)', 'l', d.l)}</div>
+    <div class="row" style="margin-top:8px">${inputM('Pé-direito', 'h', d.h)}<span></span></div><div class="wizprev" id="wPrev"></div>`;
+  if (st === 'Portas e janelas') {
+    const so = [...d.doors, ...d.windows].find(o => o.id === W.selOp);
+    body = `<p class="muted"><b>Arrasta a porta</b> ao longo das paredes até ao sítio certo: as distâncias vão aparecendo. Toca numa porta ou janela para mudar o tipo, o lado ou a largura.</p>
+    <div class="row" style="gap:6px"><button class="btn" data-w="addDoor">+ Porta</button><button class="btn" data-w="addWin">+ Janela</button></div>
+    <div class="wizprev" id="wPrev" style="height:320px"></div>
+    ${so ? `<div class="ov-row scroll" style="gap:6px;margin-bottom:8px">${opQuickHtml(so, d.doors.includes(so), 'data-woq')}</div>` : ''}
+    ${d.doors.map((o, i) => openingEditor(d, o, i, true)).join('')}${d.windows.map((o, i) => openingEditor(d, o, i, false)).join('')}
+    ${!d.doors.length && !d.windows.length ? '<p class="muted">Sem portas nem janelas.</p>' : ''}`;
+  }
+  if (st === 'Estilo') body = `<p class="muted">Escolhe o estilo. Podes mudar mais tarde.</p>${styleHtml}`;
+  sh.innerHTML = `<h2>Nova divisão</h2>${W.steps.length > 1 ? `<div class="steps">${W.steps.map((x, i) => `<i class="${i <= W.step ? 'on' : ''}"></i>`).join('')}</div>
+    <div class="muted" style="margin-bottom:8px"><b>${W.step + 1}. ${st}</b></div>` : ''}${body}<p class="warn" id="wErr"></p>
+    <div class="navbtns"><button data-w="${W.step ? 'back' : 'cancel'}">${W.step ? 'Voltar' : 'Cancelar'}</button><button class="primary" data-w="${last ? 'create' : 'next'}">${last ? 'Criar divisão' : 'Seguinte'}</button></div>`;
   const prev = sh.querySelector('#wPrev');
-  if (prev) new PlanView(prev, { selectItem() { }, selectRoom() { }, openRoom() { }, dragging() { }, changed() { }, startDrag() { } }).render({ rooms: [d] }, 'room', d.id, {});
+  if (prev) {
+    const pv = new PlanView(prev, {
+      selectItem() { }, selectRoom() { }, openRoom() { }, startDrag() { },
+      selectOp: (rid, oid) => { W.selOp = oid; pv.render({ rooms: [d] }, 'room', d.id, { opId: oid }); },
+      opTapped: () => renderWizard(),
+      dragging: () => pv.render({ rooms: [d] }, 'room', d.id, { opId: W.selOp }),
+      changed: () => renderWizard(),
+    });
+    pv.render({ rooms: [d] }, 'room', d.id, { opId: st === 'Portas e janelas' ? W.selOp : null });
+    if (st !== 'Portas e janelas') prev.style.pointerEvents = 'none';
+  }
   sh.querySelectorAll('[data-type]').forEach(b => b.onclick = () => { d.type = b.dataset.type; renderWizard(); });
   const nm = sh.querySelector('#wName'); if (nm) nm.oninput = () => d.name = nm.value;
-  sh.querySelectorAll('[data-f]').forEach(inp => { if (inp.closest('[data-op]')) return; inp.onchange = () => { d[inp.dataset.f] = r2(Math.max(0, num(inp.value))); renderWizard(); }; });
+  sh.querySelectorAll('[data-f]').forEach(inp => { if (inp.closest('[data-op]')) return; inp.onchange = () => {
+    d[inp.dataset.f] = r2(Math.max(0, num(inp.value)));
+    for (const o of [...d.doors, ...d.windows]) { const L = wallLength(d, o.wall); if (o.width > L) o.width = r2(L); o.off = r2(Math.min(Math.max(0, o.off), L - o.width)); }
+    renderWizard(); }; });
   sh.querySelectorAll('[data-style]').forEach(b => b.onclick = () => { d.style = b.dataset.style; renderWizard(); });
   const au = sh.querySelector('#wAuto'); if (au) au.onchange = () => W.auto = au.checked;
   bindOpenings(sh, d, () => renderWizard());
+  sh.querySelectorAll('[data-woq]').forEach(b => b.onclick = () => {
+    const o = [...d.doors, ...d.windows].find(x => x.id === W.selOp); if (!o) return;
+    if (opAction(d, o, b.dataset.woq) === 'deleted') W.selOp = null;
+    renderWizard();
+  });
   sh.querySelectorAll('[data-w]').forEach(b => b.onclick = () => {
     const a = b.dataset.w;
     if (a === 'cancel') return closeModal();
     if (a === 'back') { W.step--; return renderWizard(); }
-    if (a === 'addDoor') { const L = wallLength(d, 'C'); d.doors.push(newDoor({ wall: 'C', off: r2(Math.max(0, Math.min(0.2, L - 0.8))), width: Math.min(0.8, L) })); return renderWizard(); }
-    if (a === 'addWin') { const L = wallLength(d, 'A'); d.windows.push(newWindow({ wall: 'A', width: Math.min(1, L), off: r2(Math.max(0, (L - Math.min(1, L)) / 2)) })); return renderWizard(); }
+    if (a === 'addDoor' || a === 'addWin') { const o = addOpening(d, a === 'addDoor'); if (o) W.selOp = o.id; return renderWizard(); }
     // read any value still being typed
     sh.querySelectorAll('input[data-f]').forEach(inp => { if (document.activeElement === inp) inp.dispatchEvent(new Event('change')); });
     const err = wizValid(); if (err) { sh.querySelector('#wErr').textContent = err; return; }
@@ -525,10 +627,10 @@ function renderWizard() {
       d.name = d.name.trim() || ROOM_TYPES[d.type].label + (S.project.rooms.some(r => r.name === ROOM_TYPES[d.type].label) ? ' ' + W.n : '');
       const keep = W.keepPos;
       if (!keep && S.project.rooms.length) { d.x = r2(Math.max(...S.project.rooms.map(r => r.x + r.w)) + T); d.z = r2(Math.min(...S.project.rooms.map(r => r.z))); }
-      if (W.auto) autoFurnish(d);
+      d.auto = W.auto; if (W.auto) autoFurnish(d);
       S.project.rooms.push(d); const id = d.id; closeModal(); S.tab = 'medidas';
-      if (keep) { S.sel.roomId = id; changed(); toast('Divisão criada. Podes desenhar a próxima por cima do esboço.', 3500); }
-      else { openRoom(id); save(); toast('Divisão criada. Arrasta-a na planta da casa para a encaixar.'); }
+      if (keep) { S.sel.roomId = id; S.sel.opId = d.doors[0]?.id || null; changed(); toast('Divisão criada. Puxa os cantos para a acertar ao esboço e arrasta a porta para o sítio dela.', 4500); }
+      else { openRoom(id); save(); toast('Divisão criada. Na planta podes arrastar as portas e, na casa inteira, encaixar a divisão.', 4000); }
     }
   });
 }
@@ -579,7 +681,7 @@ function openMenu() {
 }
 
 // ---------- top-level wiring ----------
-$('#btnAdd').onclick = openWizard;
+$('#btnAdd').onclick = () => openWizard();
 $('#btnMenu').onclick = openMenu;
 $('#btnUndo').onclick = undo;
 $('#projName').onchange = e => { S.project.name = e.target.value || 'Projeto'; save(); };
