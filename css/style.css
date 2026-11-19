@@ -94,3 +94,10 @@ textarea { width: 100%; min-height: 120px; border: 1px solid var(--line); border
   .modal { align-items: center; }
   .sheet { border-radius: 18px; }
 }
+
+.overlay button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+.overlay button.warm { background: #d9480f; color: #fff; border-color: #d9480f; }
+.status { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin: 6px 0; }
+input[type=range] { width: 100%; accent-color: var(--acc); }
+#planTools { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+#planTools button { white-space: nowrap; }

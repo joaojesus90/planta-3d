@@ -1,5 +1,5 @@
 import * as Mdl from './model.js';
-import { PlanView } from './plan.js';
+import { PlanView, traceToWorld } from './plan.js';
 import { View3D } from './scene3d.js';
 
 const { ROOM_TYPES, WALL_INFO, DOOR_KINDS, CATALOG, STYLES, T, newRoom, newDoor, newWindow, autoFurnish, addItemAuto,
@@ -13,7 +13,7 @@ const KEY = 'planta3d-v1';
 
 const S = {
   project: null, mode: 'house', roomId: null, sel: { roomId: null, itemId: null },
-  view: '3d', tab: 'medidas', doorsOpen: true, wallCut: true, wallAll: false, undo: [], camKey: '', dirty3d: true,
+  view: '3d', tab: 'medidas', trace: null, tool: null, toolPts: [], doorsOpen: true, wallCut: true, wallAll: false, undo: [], camKey: '', dirty3d: true,
 };
 const room = () => S.project.rooms.find(r => r.id === S.roomId);
 
@@ -63,11 +63,14 @@ const plan = new PlanView($('#planHost'), {
   startDrag: () => snapshot(),
   dragging: () => renderPlan(),
   changed: () => changed(),
+  toast: m => toast(m, 3500),
+  toolPoint: p => { S.toolPts.push(p); if (S.toolPts.length > 2) S.toolPts = [p]; renderPlan(); renderView(); if (S.toolPts.length === 2) askCalibration(); },
+  rectDrawn: r => openWizard({ x: r.x0, z: r.z0, w: r.x1 - r.x0, l: r.z1 - r.z0 }),
 });
 let v3d = null;
 try { v3d = new View3D($('#threeHost')); } catch (e) { console.error(e); }
 
-function openRoom(id) { S.mode = 'room'; S.roomId = id; S.sel = { roomId: id, itemId: null }; changed({ save: false }); }
+function openRoom(id) { S.tool = null; S.toolPts = []; S.mode = 'room'; S.roomId = id; S.sel = { roomId: id, itemId: null }; changed({ save: false }); }
 function openHouse() { S.mode = 'house'; S.sel.itemId = null; changed({ save: false }); }
 
 function changed({ save: sv = true } = {}) {
@@ -89,17 +92,113 @@ function renderView() {
   $('#planHost').style.display = S.view === 'plan' ? '' : 'none';
   $('#threeHost').style.display = S.view === '3d' ? '' : 'none';
   $('#overlay3d').style.display = S.view === '3d' ? '' : 'none';
+  $('#overlayPlan').style.display = S.view === 'plan' ? '' : 'none';
   $('#camPorta').style.display = S.mode === 'room' && room()?.doors.length ? '' : 'none';
   $('#btnDoors').textContent = S.doorsOpen ? 'Fechar portas' : 'Abrir portas';
   $('#btnWalls').textContent = S.mode === 'house' ? (S.wallCut ? 'Paredes altas' : 'Paredes baixas') : (S.wallAll ? 'Esconder paredes da frente' : 'Mostrar todas as paredes');
   const hint = S.view === 'plan'
-    ? (S.mode === 'house' ? 'Arrasta as divisões para as encaixar · toca duas vezes para abrir' : 'Arrasta os móveis · toca num móvel para o editar')
+    ? (S.mode === 'house' && S.tool === 'calib' ? (S.toolPts.length ? 'Agora toca no segundo ponto' : 'Toca no primeiro ponto de uma medida que conheces')
+      : S.mode === 'house' && S.tool === 'rect' ? 'Arrasta de um canto ao canto oposto da divisão · dois dedos para aproximar'
+      : S.mode === 'house' ? 'Arrasta as divisões para as encaixar · toca duas vezes para abrir · dois dedos para aproximar' : 'Arrasta os móveis · toca num móvel para o editar')
     : 'Arrasta para rodar · dois dedos para aproximar e deslocar';
   $('#hint').textContent = hint;
   if (!v3d && S.view === '3d') $('#hint').textContent = 'O 3D não está disponível neste browser.';
 }
 
-function renderPlan() { plan.render(S.project, S.mode, S.roomId, S.sel); }
+function renderPlan() { plan.render(S.project, S.mode, S.roomId, S.sel, { trace: S.trace, tool: S.mode === 'house' ? S.tool : null, toolPts: S.toolPts }); renderPlanTools(); }
+
+function renderPlanTools() {
+  const el = $('#planTools'); if (!el) return;
+  const tr = S.mode === 'house' && S.trace;
+  let h = '';
+  if (tr) {
+    h += `<button data-tool="calib" class="${S.tool === 'calib' ? 'warm' : ''}">📏 Escala</button>`;
+    h += `<button data-tool="rect" class="${S.tool === 'rect' ? 'on' : ''}">▭ Divisão</button>`;
+    if (S.tool) h += `<button data-tool="none">✓ Terminar</button>`;
+  }
+  h += `<button data-tool="fit" title="Ajustar vista">⤢</button>`;
+  el.innerHTML = h;
+  el.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
+    const t = b.dataset.tool;
+    if (t === 'fit') { plan.fitView(); renderPlan(); return; }
+    setTool(t === 'none' || S.tool === t ? null : t);
+  });
+}
+
+function setTool(t) {
+  S.tool = t; S.toolPts = [];
+  if (t) { S.mode = 'house'; S.view = 'plan'; }
+  changed({ save: false });
+  if (t === 'calib') toast('Toca em dois pontos do esboço cuja distância real conheces (por exemplo, as pontas de uma parede).', 4500);
+  if (t === 'rect') toast('Arrasta de um canto de uma divisão até ao canto oposto. Dois dedos para aproximar.', 4500);
+}
+
+// ---------- sketch (photo trace) ----------
+const TKEY = KEY + '-trace';
+function saveTrace() {
+  try { if (S.trace) localStorage.setItem(TKEY, JSON.stringify(S.trace)); else localStorage.removeItem(TKEY); }
+  catch (e) { toast('A foto é grande demais para ficar guardada no browser: fica só nesta sessão.', 4000); }
+}
+async function loadSketch(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image(); img.src = url; await img.decode();
+    const max = 1600, f = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.round(img.naturalWidth * f), h = Math.round(img.naturalHeight * f);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+    // greyscale + auto levels, so pencil lines stand out on white paper
+    const d = g.getImageData(0, 0, w, h), px = d.data, hist = new Uint32Array(256);
+    for (let i = 0; i < px.length; i += 4) { const y = (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11) | 0; px[i] = y; hist[y]++; }
+    const n = w * h; let acc = 0, lo = 0, hi = 255;
+    for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc > n * 0.01) { lo = i; break; } }
+    acc = 0; for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc > n * 0.35) { hi = i; break; } }
+    const span = Math.max(20, hi - lo);
+    for (let i = 0; i < px.length; i += 4) { const v = Math.max(0, Math.min(255, (px[i] - lo) * 255 / span)); px[i] = px[i + 1] = px[i + 2] = v; }
+    g.putImageData(d, 0, 0);
+    const rs = S.project.rooms;
+    S.trace = { img: c.toDataURL('image/jpeg', 0.72), iw: w, ih: h, x: rs.length ? Math.min(...rs.map(r => r.x)) : 0, z: rs.length ? Math.min(...rs.map(r => r.z)) : 0,
+      s: 8 / Math.max(w, h), rot: 0, op: 0.6, show: true, calibrated: false };
+    saveTrace(); plan.fitView(); setTool('calib');
+  } catch (e) { toast('Não consegui abrir essa imagem.'); }
+  finally { URL.revokeObjectURL(url); }
+}
+function askCalibration() {
+  const [a, b] = S.toolPts, dist = Math.hypot(a.x - b.x, a.z - b.z);
+  const sh = $('#sheet');
+  sh.innerHTML = `<h2>Acertar a escala</h2><p class="muted">Quantos metros mede, na realidade, a distância entre os dois pontos que marcaste?</p>
+    <div class="row">${inputM('Distância real', 'dist', dist)}<span></span></div><p class="warn" id="cErr"></p>
+    <div class="navbtns"><button data-c="cancel">Cancelar</button><button class="primary" data-c="ok">Aplicar escala</button></div>`;
+  $('#modal').hidden = false;
+  const inp = sh.querySelector('input'); inp.select();
+  sh.querySelector('[data-c=cancel]').onclick = () => { closeModal(); S.toolPts = []; renderPlan(); };
+  sh.querySelector('[data-c=ok]').onclick = () => {
+    const D = num(inp.value); if (D <= 0.1) { sh.querySelector('#cErr').textContent = 'Indica uma distância maior do que 0,10 m.'; return; }
+    const f = D / dist, t = S.trace;
+    t.x = a.x + (t.x - a.x) * f; t.z = a.z + (t.z - a.z) * f; t.s *= f; t.calibrated = true;
+    saveTrace(); closeModal(); plan.fitView(); setTool('rect');
+  };
+}
+function rotateTrace(deg) {
+  const t = S.trace, c = traceToWorld(t, t.iw / 2, t.ih / 2);
+  t.rot = deg;
+  const c2 = traceToWorld(t, t.iw / 2, t.ih / 2);
+  t.x += c.x - c2.x; t.z += c.z - c2.z;
+}
+function traceCard() {
+  const t = S.trace;
+  if (!t) return `<div class="card"><b>📷 Partir de um esboço em papel</b>
+    <p class="muted" style="margin:6px 0">Tira uma foto ao esboço, de cima, com o papel inteiro e boa luz. Ela fica por baixo da planta e desenhas as divisões por cima, já no sítio certo.</p>
+    <div class="btns"><button class="primary" data-act="sketch">Carregar foto do esboço</button></div></div>`;
+  const n = S.project.rooms.length;
+  return `<div class="card"><b>📷 Esboço</b>
+    <div class="status"><span>${t.calibrated ? '✅' : '🟡'}</span><span><b>1. Escala</b> ${t.calibrated ? 'acertada.' : 'por acertar: marca dois pontos de uma medida que conheças.'}</span></div>
+    <div class="status"><span>${n ? '✅' : '🟡'}</span><span><b>2. Divisões</b> ${n ? `${n} desenhada${n > 1 ? 's' : ''}.` : 'arrasta de canto a canto por cima de cada divisão.'} As medidas exatas confirmas no assistente.</span></div>
+    <div class="btns"><button data-act="calib" class="${S.tool === 'calib' ? 'primary' : ''}">📏 Acertar escala</button><button data-act="drawRect" class="${S.tool === 'rect' ? 'primary' : ''}">▭ Desenhar divisão</button>${S.tool ? '<button data-act="toolOff">Terminar</button>' : ''}</div>
+    <label class="f" style="margin-top:10px">Visibilidade da foto<input type="range" min="0.15" max="1" step="0.05" value="${t.op}" data-tr="op"></label>
+    <label class="f" style="margin-top:6px">Endireitar a foto (${fmt(t.rot)}°)<input type="range" min="-20" max="20" step="0.5" value="${t.rot}" data-tr="rot"></label>
+    <div class="btns"><button data-act="traceShow">${t.show ? 'Ocultar foto' : 'Mostrar foto'}</button><button data-act="sketch">Trocar foto</button><button class="danger" data-act="traceDel">Remover foto</button></div></div>`;
+}
 
 function rebuild3D() {
   if (!v3d || S.view !== '3d' || !S.dirty3d) return;
@@ -125,10 +224,10 @@ function inputM(label, f, v, extra = '') { return `<label class="f">${label}<spa
 
 function housePanel() {
   const rs = S.project.rooms;
-  if (!rs.length) return `<div class="card"><h2>Começa a tua casa</h2><p class="muted">Cria a primeira divisão: eu pergunto-te as medidas, as portas, as janelas e o estilo.</p>
+  if (!rs.length) return `${traceCard()}<div class="card"><h2>Começa a tua casa</h2><p class="muted">Cria a primeira divisão: eu pergunto-te as medidas, as portas, as janelas e o estilo.</p>
     <div class="btns"><button class="primary" data-act="add">+ Nova divisão</button><button data-act="example">Ver exemplo</button></div></div>`;
   const total = rs.reduce((a, r) => a + r.w * r.l, 0);
-  return `<h2>Casa inteira</h2>
+  return `<h2>Casa inteira</h2>${traceCard()}
     <p class="muted">${rs.length} divisões · ${fmt(total)} m² úteis. Na planta, arrasta cada divisão para a encaixar nas outras (as paredes alinham sozinhas). Toca duas vezes para a abrir.</p>
     ${rs.map(r => { const st = styleById(r.style), on = S.sel.roomId === r.id; return `<div class="card ${on ? 'sel' : ''}" data-room="${r.id}">
       <div class="row" style="justify-content:space-between"><div><b>${esc(r.name)}</b><br><small class="muted">${ROOM_TYPES[r.type]?.label || ''} · ${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²</small></div>
@@ -258,6 +357,10 @@ function bindPanel(p) {
   p.querySelectorAll('[data-style]').forEach(b => b.onclick = () => {
     if (!r) return; snapshot(); r.style = b.dataset.style; changed();
   });
+  p.querySelectorAll('[data-tr]').forEach(inp => {
+    inp.oninput = () => { const v = parseFloat(inp.value); if (inp.dataset.tr === 'op') S.trace.op = v; else rotateTrace(v); renderPlan(); };
+    inp.onchange = () => { saveTrace(); renderPanel(); };
+  });
   if (S.mode === 'house') {
     p.querySelectorAll('[data-room]').forEach(card => {
       const rr = S.project.rooms.find(x => x.id === card.dataset.room);
@@ -276,6 +379,12 @@ function bindPanel(p) {
     b.onclick = () => {
       const a = b.dataset.act;
       if (a === 'add') openWizard();
+      if (a === 'sketch') { const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*'; fi.onchange = () => fi.files[0] && loadSketch(fi.files[0]); fi.click(); }
+      if (a === 'calib') setTool(S.tool === 'calib' ? null : 'calib');
+      if (a === 'drawRect') setTool(S.tool === 'rect' ? null : 'rect');
+      if (a === 'toolOff') setTool(null);
+      if (a === 'traceShow') { S.trace.show = !S.trace.show; saveTrace(); changed({ save: false }); }
+      if (a === 'traceDel' && confirmTwice(b, 'traceDel')) { S.trace = null; S.tool = null; saveTrace(); plan.fitView(); changed({ save: false }); }
       if (a === 'example') { snapshot(); S.project = exampleProject(); changed(); }
       if (a === 'allStyle') { S.tab = 'estilo'; if (S.project.rooms[0]) openRoom(S.project.rooms[0].id); }
       if (!r) return;
@@ -328,10 +437,17 @@ function bindPanel(p) {
 // ---------- wizard ----------
 let W = null;
 const STEPS = ['Tipo', 'Medidas', 'Portas', 'Janelas', 'Estilo'];
-function openWizard() {
+function openWizard(pre) {
   const n = S.project.rooms.length + 1;
   W = { step: 0, auto: true, draft: newRoom({ type: 'wc', w: 2, l: 2.5, style: S.project.rooms.at(-1)?.style || 'calacatta', doors: [newDoor({ wall: 'C', off: 0.2, width: 0.8 })] }) };
-  W.draft.name = ''; W.n = n; renderWizard(); $('#modal').hidden = false;
+  W.draft.name = ''; W.n = n;
+  if (pre) {
+    const q = v => Math.round(v * 20) / 20;
+    Object.assign(W.draft, { x: r2(pre.x), z: r2(pre.z), w: q(pre.w), l: q(pre.l) });
+    W.keepPos = true; W.measured = { w: q(pre.w), l: q(pre.l) };
+    W.draft.doors = [newDoor({ wall: 'C', off: r2(Math.max(0, Math.min(0.2, W.draft.w - 0.8))), width: Math.min(0.8, W.draft.w) })];
+  }
+  renderWizard(); $('#modal').hidden = false;
 }
 function closeModal() { $('#modal').hidden = true; W = null; }
 function wizValid() {
@@ -350,7 +466,8 @@ function renderWizard() {
     <label class="f" style="margin-top:12px">Nome (opcional)<input id="wName" value="${esc(d.name)}" placeholder="${esc(ROOM_TYPES[d.type].label)}"></label>`;
   if (W.step === 1) body = `<p class="muted">Medidas interiores, de parede a parede. A parede A fica em cima na planta, B à direita, C em baixo e D à esquerda.</p>
     <div class="row">${inputM('Largura (paredes A e C)', 'w', d.w)}${inputM('Comprimento (paredes B e D)', 'l', d.l)}</div>
-    <div class="row" style="margin-top:8px">${inputM('Pé-direito', 'h', d.h)}<span></span></div><div class="wizprev" id="wPrev"></div>`;
+    <div class="row" style="margin-top:8px">${inputM('Pé-direito', 'h', d.h)}<span></span></div>
+    ${W.measured ? `<p class="muted">📏 Medido no esboço: ${fmt(W.measured.w)} × ${fmt(W.measured.l)} m. Corrige para as medidas reais, se as souberes.</p>` : ''}<div class="wizprev" id="wPrev"></div>`;
   if (W.step === 2) body = `<p class="muted">Diz-me em que parede fica cada porta e a que distância está das paredes de cada lado. A segunda distância calcula-se sozinha.</p>
     <div class="wizprev" id="wPrev"></div>${d.doors.map((o, i) => openingEditor(d, o, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
     <div class="btns"><button data-w="addDoor">+ Adicionar porta</button></div>`;
@@ -384,10 +501,12 @@ function renderWizard() {
     if (a === 'create') {
       snapshot();
       d.name = d.name.trim() || ROOM_TYPES[d.type].label + (S.project.rooms.some(r => r.name === ROOM_TYPES[d.type].label) ? ' ' + W.n : '');
-      if (S.project.rooms.length) { d.x = r2(Math.max(...S.project.rooms.map(r => r.x + r.w)) + T); d.z = r2(Math.min(...S.project.rooms.map(r => r.z))); }
+      const keep = W.keepPos;
+      if (!keep && S.project.rooms.length) { d.x = r2(Math.max(...S.project.rooms.map(r => r.x + r.w)) + T); d.z = r2(Math.min(...S.project.rooms.map(r => r.z))); }
       if (W.auto) autoFurnish(d);
-      S.project.rooms.push(d); const id = d.id; closeModal(); S.tab = 'medidas'; openRoom(id); save();
-      toast('Divisão criada. Arrasta-a na planta da casa para a encaixar.');
+      S.project.rooms.push(d); const id = d.id; closeModal(); S.tab = 'medidas';
+      if (keep) { S.sel.roomId = id; changed(); toast('Divisão criada. Podes desenhar a próxima por cima do esboço.', 3500); }
+      else { openRoom(id); save(); toast('Divisão criada. Arrasta-a na planta da casa para a encaixar.'); }
     }
   });
 }
@@ -455,6 +574,7 @@ $('#btnWalls').onclick = () => { if (S.mode === 'house') S.wallCut = !S.wallCut;
   if (!p) { const l = load(); if (l) try { p = sanitize(l); } catch (e) { } }
   if (!p) { p = exampleProject(); p.name = 'Exemplo'; setTimeout(() => toast('Isto é um exemplo. Toca em “+ Divisão” para criares a tua.', 4500), 400); }
   S.project = p;
+  try { const t = localStorage.getItem(TKEY); if (t) S.trace = JSON.parse(t); } catch (e) { }
   try { S.view = localStorage.getItem(KEY + '-view') || '3d'; } catch (e) { }
   if (!v3d) S.view = 'plan';
   changed({ save: !!m });

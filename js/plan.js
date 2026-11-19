@@ -17,7 +17,8 @@ export class PlanView {
     this.host = host; this.cb = cb;
     this.svg = el('svg', { width: '100%', height: '100%' }, host);
     this.svg.style.touchAction = 'none';
-    this.drag = null; this.lastTap = 0;
+    this.drag = null; this.lastTap = 0; this.ptrs = new Map(); this.pinch = null; this.userView = null; this.rectDraft = null;
+    this.svg.addEventListener('wheel', e => this.wheel(e), { passive: false });
     this.svg.addEventListener('pointerdown', e => this.down(e));
     this.svg.addEventListener('pointermove', e => this.move(e));
     this.svg.addEventListener('pointerup', e => this.up(e));
@@ -26,24 +27,33 @@ export class PlanView {
 
   pt(e) { const p = this.svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; return p.matrixTransform(this.svg.getScreenCTM().inverse()); }
 
-  render(project, mode, roomId, sel) {
-    this.project = project; this.mode = mode; this.roomId = roomId; this.sel = sel;
+  render(project, mode, roomId, sel, ext = {}) {
+    const key = mode + (roomId || '');
+    if (key !== this.key) { this.userView = null; this.key = key; }
+    this.project = project; this.mode = mode; this.roomId = roomId; this.sel = sel; this.ext = ext;
     const svg = this.svg; svg.innerHTML = '';
     const rooms = mode === 'house' ? project.rooms : project.rooms.filter(r => r.id === roomId);
-    if (!rooms.length) { svg.setAttribute('viewBox', '0 0 10 6'); el('text', { x: 5, y: 3, 'font-size': 0.35, 'text-anchor': 'middle', fill: '#8a8f94' }, svg).textContent = 'Ainda não há divisões. Toca em “+ Divisão”.'; return; }
+    const tr = mode === 'house' && ext.trace && ext.trace.show ? ext.trace : null;
+    if (!rooms.length && !tr) { this.fit = { x0: 0, z0: 0, w: 10, h: 6 }; svg.setAttribute('viewBox', '0 0 10 6'); el('text', { x: 5, y: 3, 'font-size': 0.35, 'text-anchor': 'middle', fill: '#8a8f94' }, svg).textContent = 'Ainda não há divisões. Toca em “+ Divisão”.'; return; }
     const xs = rooms.flatMap(r => [r.x, r.x + r.w]), zs = rooms.flatMap(r => [r.z, r.z + r.l]);
+    if (tr) for (const [px, pz] of [[0, 0], [tr.iw, 0], [0, tr.ih], [tr.iw, tr.ih]]) { const q = traceToWorld(tr, px, pz); xs.push(q.x); zs.push(q.z); }
     const m = mode === 'house' ? 0.6 : 0.95;
-    const x0 = Math.min(...xs) - m, z0 = Math.min(...zs) - m, x1 = Math.max(...xs) + m, z1 = Math.max(...zs) + m;
-    svg.setAttribute('viewBox', `${x0} ${z0} ${x1 - x0} ${z1 - z0}`);
-    this.k = Math.max(x1 - x0, z1 - z0) / 12;   // text scale
+    const x0 = Math.min(...xs) - m, x1 = Math.max(...xs) + m, z1 = Math.max(...zs) + m;
+    const z0 = Math.min(...zs) - m - (Math.max(...zs) - Math.min(...zs) + 2 * m) * 0.12;   // room for the tool buttons
+    this.fit = { x0, z0, w: x1 - x0, h: z1 - z0 };
+    const v = this.userView || this.fit;
+    svg.setAttribute('viewBox', `${v.x0} ${v.z0} ${v.w} ${v.h}`);
+    this.k = Math.max(v.w, v.h) / 12;   // text scale follows the zoom
     const defs = el('defs', {}, svg);
     defs.innerHTML = `<pattern id="hatch" width="0.08" height="0.08" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="0.08" height="0.08" fill="#e6f0f5"/><line x1="0" y1="0" x2="0" y2="0.08" stroke="#c6dce7" stroke-width="0.02"/></pattern>
       <marker id="arw" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b7177"/></marker>`;
 
+    if (tr) el('image', { href: tr.img, x: 0, y: 0, width: tr.iw, height: tr.ih, preserveAspectRatio: 'none', opacity: tr.op, 'pointer-events': 'none',
+      transform: `translate(${tr.x} ${tr.z}) rotate(${tr.rot}) scale(${tr.s})` }, svg);
     // floors
     for (const r of rooms) {
       const gR = el('g', { 'data-room': r.id }, svg);
-      el('rect', { x: r.x, y: r.z, width: r.w, height: r.l, fill: r.type === 'wc' ? '#f1f5f7' : '#faf8f4', class: 'floor' }, gR);
+      el('rect', { x: r.x, y: r.z, width: r.w, height: r.l, fill: r.type === 'wc' ? '#f1f5f7' : '#faf8f4', 'fill-opacity': tr ? 0.55 : 1, class: 'floor' }, gR);
       if (mode === 'house' && sel?.roomId === r.id) el('rect', { x: r.x, y: r.z, width: r.w, height: r.l, fill: 'rgba(47,111,143,.08)', stroke: '#2f6f8f', 'stroke-width': 0.03 }, gR);
     }
     // furniture (both modes; non-interactive in house mode)
@@ -71,6 +81,43 @@ export class PlanView {
         t2.textContent = `${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²`;
       }
     } else this.drawDims(rooms[0], svg);
+    this.drawTool(svg);
+  }
+
+  drawTool(svg) {
+    const k = this.k, ext = this.ext || {};
+    if (ext.tool === 'calib') {
+      const pts = ext.toolPts || [];
+      if (pts.length === 2) el('line', { x1: pts[0].x, y1: pts[0].z, x2: pts[1].x, y2: pts[1].z, stroke: '#d9480f', 'stroke-width': k * 0.05 }, svg);
+      for (const q of pts) { el('circle', { cx: q.x, cy: q.z, r: k * 0.16, fill: 'rgba(217,72,15,.25)', stroke: '#d9480f', 'stroke-width': k * 0.04 }, svg); el('circle', { cx: q.x, cy: q.z, r: k * 0.03, fill: '#d9480f' }, svg); }
+    }
+    const d = this.rectDraft;
+    if (d) {
+      el('rect', { x: d.x0, y: d.z0, width: d.x1 - d.x0, height: d.z1 - d.z0, fill: 'rgba(47,111,143,.15)', stroke: '#2f6f8f', 'stroke-width': k * 0.04, 'stroke-dasharray': `${k * 0.15} ${k * 0.1}` }, svg);
+      const t = el('text', { x: (d.x0 + d.x1) / 2, y: (d.z0 + d.z1) / 2, 'font-size': k * 0.4, 'text-anchor': 'middle', fill: '#2f6f8f', 'font-weight': 700, 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': k * 0.1 }, svg);
+      t.textContent = `${fmt(d.x1 - d.x0)} × ${fmt(d.z1 - d.z0)} m`;
+    }
+  }
+
+  fitView() { this.userView = null; }
+  curView() { return this.userView || this.fit; }
+
+  snapPt(p) {
+    const tol = this.k * 0.35, rooms = this.project.rooms;
+    const snap = (v, cands) => { let best = null; for (const c of cands) if (Math.abs(v - c) < tol && (best === null || Math.abs(v - c) < Math.abs(v - best))) best = c; return best ?? Math.round(v * 20) / 20; };
+    return { x: r2(snap(p.x, rooms.flatMap(o => [o.x - T, o.x + o.w + T, o.x, o.x + o.w]))), z: r2(snap(p.y ?? p.z, rooms.flatMap(o => [o.z - T, o.z + o.l + T, o.z, o.z + o.l]))) };
+  }
+
+  wheel(e) {
+    e.preventDefault();
+    const sc = Math.exp(e.deltaY * 0.0015), ctm = this.svg.getScreenCTM(), v0 = this.curView(), w = this.pt(e);
+    this.userView = this.zoomed(v0, ctm, sc, w, { x: e.clientX, y: e.clientY });
+    this.cb.dragging();
+  }
+  // New view so that world point w sits under client point c, after scaling by sc.
+  zoomed(v0, ctm, sc, w, c) {
+    const a2 = ctm.a / sc, d2 = ctm.d / sc;
+    return { x0: w.x - (c.x - ctm.e - ctm.a * v0.x0) / a2, z0: w.y - (c.y - ctm.f - ctm.d * v0.z0) / d2, w: v0.w * sc, h: v0.h * sc };
   }
 
   drawOpenings(r, svg) {
@@ -210,35 +257,67 @@ export class PlanView {
 
   // ---------- interaction ----------
   down(e) {
-    const p = this.pt(e);
+    try { this.svg.setPointerCapture(e.pointerId); } catch (err) { }
+    this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.ptrs.size === 2) {
+      if (this.drag?.moved && (this.drag.kind === 'room' || this.drag.kind === 'item')) this.cb.changed();
+      this.drag = null; this.rectDraft = null;
+      const [a, b] = [...this.ptrs.values()], ctm = this.svg.getScreenCTM();
+      const m0 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const w = { x: (m0.x - ctm.e) / ctm.a, y: (m0.y - ctm.f) / ctm.d };
+      this.pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y), v0: { ...this.curView() }, ctm, w };
+      return;
+    }
+    if (this.ptrs.size > 2) return;
+    const p = this.pt(e), tool = this.mode === 'house' ? this.ext?.tool : null;
+    const pan = (onTap) => { this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, v0: { ...this.curView() }, ctm: this.svg.getScreenCTM(), moved: false, onTap }; };
+    if (tool === 'calib') { this.drag = { kind: 'tap', sx: e.clientX, sy: e.clientY, p: { x: p.x, z: p.y }, moved: false }; return; }
+    if (tool === 'rect') { this.drag = { kind: 'rect', p0: this.snapPt(p), moved: false, sx: e.clientX, sy: e.clientY }; return; }
     const itemEl = e.target.closest('[data-item]');
     if (this.mode === 'room') {
       const r = this.project.rooms.find(x => x.id === this.roomId);
       const id = itemEl?.getAttribute('data-item');
-      if (id) {
+      if (id && r) {
         const it = r.items.find(i => i.id === id);
         this.drag = { kind: 'item', it, r, sx: p.x, sy: p.y, ox: it.x, oz: it.z, moved: false };
-        this.svg.setPointerCapture(e.pointerId);
         this.cb.selectItem(id);
-      } else this.cb.selectItem(null);
+      } else pan(() => this.cb.selectItem(null));
       return;
     }
-    // house: find room under pointer (topmost)
     const r = [...this.project.rooms].reverse().find(r => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.z && p.y <= r.z + r.l);
-    if (!r) { this.cb.selectRoom(null); return; }
+    if (!r) { pan(() => this.cb.selectRoom(null)); return; }
     const now = Date.now();
     if (now - this.lastTap < 350 && this.lastRoom === r.id) { this.cb.openRoom(r.id); this.lastTap = 0; return; }
     this.lastTap = now; this.lastRoom = r.id;
     this.drag = { kind: 'room', r, sx: p.x, sy: p.y, ox: r.x, oz: r.z, moved: false };
-    this.svg.setPointerCapture(e.pointerId);
     this.cb.selectRoom(r.id);
   }
 
   move(e) {
-    if (!this.drag) return;
-    const p = this.pt(e), D = this.drag;
+    if (!this.ptrs.has(e.pointerId)) return;
+    this.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pinch && this.ptrs.size === 2) {
+      const [a, b] = [...this.ptrs.values()], P = this.pinch;
+      const sc = Math.min(8, Math.max(0.05, P.d0 / Math.max(1, Math.hypot(a.x - b.x, a.y - b.y))));
+      this.userView = this.zoomed(P.v0, P.ctm, sc, P.w, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      this.cb.dragging(); return;
+    }
+    const D = this.drag; if (!D) return;
+    if (D.kind === 'pan' || D.kind === 'tap' || D.kind === 'rect') {
+      const px = Math.hypot(e.clientX - D.sx, e.clientY - D.sy);
+      if (!D.moved && px < 6) return;
+      D.moved = true;
+      if (D.kind === 'pan') {
+        const v0 = D.v0;
+        this.userView = { x0: v0.x0 - (e.clientX - D.sx) / D.ctm.a, z0: v0.z0 - (e.clientY - D.sy) / D.ctm.d, w: v0.w, h: v0.h };
+        this.cb.dragging();
+      }
+      if (D.kind === 'rect') { const q = this.snapPt(this.pt(e)); this.rectDraft = rect(D.p0.x, D.p0.z, q.x, q.z); this.cb.dragging(); }
+      return;
+    }
+    const p = this.pt(e);
     const dx = p.x - D.sx, dz = p.y - D.sy;
-    if (!D.moved && Math.hypot(dx, dz) < 0.04) return;
+    if (!D.moved && Math.hypot(dx, dz) < this.k * 0.1) return;
     if (!D.moved) this.cb.startDrag?.();
     D.moved = true;
     if (D.kind === 'room') {
@@ -263,10 +342,25 @@ export class PlanView {
   }
 
   up(e) {
-    if (!this.drag) return;
-    const moved = this.drag.moved; this.drag = null;
-    if (moved) this.cb.changed();
+    this.ptrs.delete(e.pointerId);
+    if (this.pinch) { if (this.ptrs.size < 2) this.pinch = null; this.drag = null; return; }
+    const D = this.drag; this.drag = null;
+    if (!D) return;
+    if (D.kind === 'tap') { if (!D.moved) this.cb.toolPoint?.(D.p); return; }
+    if (D.kind === 'pan') { if (!D.moved) D.onTap?.(); return; }
+    if (D.kind === 'rect') {
+      const r = this.rectDraft; this.rectDraft = null;
+      if (r && r.x1 - r.x0 >= 0.5 && r.z1 - r.z0 >= 0.5) this.cb.rectDrawn?.(r);
+      else { this.cb.dragging(); if (D.moved) this.cb.toast?.('Arrasta de um canto da divisão até ao canto oposto (mínimo 0,50 m).'); }
+      return;
+    }
+    if (D.moved) this.cb.changed();
   }
+}
+
+export function traceToWorld(tr, px, pz) {
+  const a = tr.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return { x: tr.x + tr.s * (px * c - pz * s), z: tr.z + tr.s * (px * s + pz * c) };
 }
 
 function validate(r) {

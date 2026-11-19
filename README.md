@@ -9,6 +9,7 @@ Simulador simples de divisões: indicas as medidas, as portas e as janelas, esco
 - **Janelas** com largura, altura e altura do peitoril.
 - **Mobiliário automático** para cada tipo de divisão, que respeita a passagem das portas, as janelas e a caixa das portas de correr. Depois podes arrastar, rodar, espelhar, redimensionar, remover ou acrescentar peças.
 - **8 estilos**: Mármore Calacatta e dourado, Mármore Nero e dourado, Microcimento, Escandinavo, Japandi, Zellige verde e latão, Mediterrâneo português e Industrial. Um estilo por divisão.
+- **Partir de um esboço em papel**: tiras uma foto ao esboço, a app realça os traços e põe-na por baixo da planta. Marcas dois pontos de uma medida conhecida para acertar a escala e depois arrastas de canto a canto por cima de cada divisão. O assistente abre já com as medidas e a posição, e tu só confirmas. A foto fica guardada só no teu browser e não vai no link de partilha.
 - **Casa inteira**: arrasta as divisões na planta para as encaixar (as paredes alinham sozinhas) ou escreve a posição em metros.
 - **Partilhar**: o menu ☰ gera um link com o projeto completo lá dentro. Também podes descarregar ou abrir um ficheiro `.json`.
 - O projeto fica guardado automaticamente no browser.
@@ -43,7 +44,7 @@ index.html          página e layout
 css/style.css       estilos (mobile primeiro)
 js/main.js          estado da app, painéis, assistente, guardar e partilhar
 js/model.js         dados, catálogo de móveis, estilos e distribuição automática
-js/plan.js          planta 2D em SVG (arrastar divisões e móveis)
+js/plan.js          planta 2D em SVG (arrastar, zoom, decalque do esboço)
 js/scene3d.js       vista 3D (paredes, portas, janelas, luz, câmara)
 js/furniture3d.js   modelos 3D dos móveis
 js/textures.js      texturas geradas por código (mármore, madeira, azulejo…)
