@@ -81,7 +81,54 @@ export class PlanView {
         t2.textContent = `${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²`;
       }
     } else this.drawDims(rooms[0], svg);
+    if (mode === 'house' && this.ext?.tool !== 'calib') this.drawHandles(svg);
     this.drawTool(svg);
+  }
+
+  drawHandles(svg) {
+    const r = this.project.rooms.find(o => o.id === this.sel?.roomId); if (!r) return;
+    const k = this.k, g = el('g', {}, svg);
+    el('rect', { x: r.x, y: r.z, width: r.w, height: r.l, fill: 'none', stroke: '#2f6f8f', 'stroke-width': k * 0.035, 'stroke-dasharray': `${k * 0.12} ${k * 0.08}`, 'pointer-events': 'none' }, g);
+    const x0 = r.x, x1 = r.x + r.w, z0 = r.z, z1 = r.z + r.l, xm = (x0 + x1) / 2, zm = (z0 + z1) / 2;
+    const H = [['nw', x0, z0], ['ne', x1, z0], ['sw', x0, z1], ['se', x1, z1], ['n', xm, z0], ['s', xm, z1], ['w', x0, zm], ['e', x1, zm]];
+    for (const [h, x, z] of H) {
+      const hg = el('g', { 'data-h': h, style: 'cursor:' + ({ n: 'ns', s: 'ns', e: 'ew', w: 'ew', nw: 'nwse', se: 'nwse', ne: 'nesw', sw: 'nesw' }[h]) + '-resize' }, g);
+      el('circle', { cx: x, cy: z, r: k * 0.42, fill: 'transparent' }, hg);   // generous touch target
+      if (h.length === 2) el('circle', { cx: x, cy: z, r: k * 0.15, fill: '#fff', stroke: '#2f6f8f', 'stroke-width': k * 0.05 }, hg);
+      else el('rect', { x: x - k * 0.1, y: z - k * 0.1, width: k * 0.2, height: k * 0.2, rx: k * 0.03, fill: '#2f6f8f', stroke: '#fff', 'stroke-width': k * 0.03 }, hg);
+    }
+    if (this.drag?.kind === 'resize' && this.drag.moved) {
+      const t = el('text', { x: xm, y: zm - k * 0.6, 'font-size': k * 0.4, 'text-anchor': 'middle', fill: '#2f6f8f', 'font-weight': 700, 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': k * 0.1, 'pointer-events': 'none' }, g);
+      t.textContent = `${fmt(r.w)} × ${fmt(r.l)} m`;
+    }
+  }
+
+  resizeTo(D, p) {
+    const r = D.r, o = D.orig, q = this.snapPt(p, r), MIN = 0.5;
+    let x0 = o.x, x1 = o.x + o.w, z0 = o.z, z1 = o.z + o.l;
+    if (D.h.includes('w')) x0 = Math.min(q.x, x1 - MIN);
+    if (D.h.includes('e')) x1 = Math.max(q.x, x0 + MIN);
+    if (D.h.includes('n')) z0 = Math.min(q.z, z1 - MIN);
+    if (D.h.includes('s')) z1 = Math.max(q.z, z0 + MIN);
+    const dx = r2(x0 - o.x), dz = r2(z0 - o.z);
+    r.x = r2(x0); r.z = r2(z0); r.w = r2(x1 - x0); r.l = r2(z1 - z0);
+    // keep furniture and openings where they are in the house while the room grows or shrinks
+    r.items.forEach((it, i) => { it.x = r2(D.items[i].x - dx); it.z = r2(D.items[i].z - dz); });
+    [...r.doors, ...r.windows].forEach((op, i) => { op.off = r2(D.ops[i] - (op.wall === 'A' || op.wall === 'C' ? dx : dz)); });
+  }
+
+  finishResize(r) {
+    for (const op of [...r.doors, ...r.windows]) {
+      const L = wallLength(r, op.wall);
+      if (op.width > L) op.width = r2(L);
+      op.off = r2(Math.min(Math.max(0, op.off), L - op.width));
+    }
+    r.items = r.items.filter(it => { const q = itemRect(it); return q.x1 > 0 && q.z1 > 0 && q.x0 < r.w && q.z0 < r.l; });
+    for (const it of r.items) {
+      const q = itemRect(it), hw = (q.x1 - q.x0) / 2, hd = (q.z1 - q.z0) / 2;
+      it.x = r2(Math.min(Math.max(hw, it.x), Math.max(hw, r.w - hw)));
+      it.z = r2(Math.min(Math.max(hd, it.z), Math.max(hd, r.l - hd)));
+    }
   }
 
   drawTool(svg) {
@@ -102,8 +149,8 @@ export class PlanView {
   fitView() { this.userView = null; }
   curView() { return this.userView || this.fit; }
 
-  snapPt(p) {
-    const tol = this.k * 0.35, rooms = this.project.rooms;
+  snapPt(p, exclude) {
+    const tol = this.k * 0.15, rooms = this.project.rooms.filter(o => o !== exclude);
     const snap = (v, cands) => { let best = null; for (const c of cands) if (Math.abs(v - c) < tol && (best === null || Math.abs(v - c) < Math.abs(v - best))) best = c; return best ?? Math.round(v * 20) / 20; };
     return { x: r2(snap(p.x, rooms.flatMap(o => [o.x - T, o.x + o.w + T, o.x, o.x + o.w]))), z: r2(snap(p.y ?? p.z, rooms.flatMap(o => [o.z - T, o.z + o.l + T, o.z, o.z + o.l]))) };
   }
@@ -271,6 +318,11 @@ export class PlanView {
     if (this.ptrs.size > 2) return;
     const p = this.pt(e), tool = this.mode === 'house' ? this.ext?.tool : null;
     const pan = (onTap) => { this.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, v0: { ...this.curView() }, ctm: this.svg.getScreenCTM(), moved: false, onTap }; };
+    const hEl = tool !== 'calib' && this.mode === 'house' && e.target.closest('[data-h]');
+    if (hEl) {
+      const r = this.project.rooms.find(o => o.id === this.sel?.roomId);
+      if (r) { this.drag = { kind: 'resize', h: hEl.getAttribute('data-h'), r, orig: { x: r.x, z: r.z, w: r.w, l: r.l }, items: r.items.map(i => ({ x: i.x, z: i.z })), ops: [...r.doors, ...r.windows].map(o => o.off), moved: false, sx: e.clientX, sy: e.clientY }; return; }
+    }
     if (tool === 'calib') { this.drag = { kind: 'tap', sx: e.clientX, sy: e.clientY, p: { x: p.x, z: p.y }, moved: false }; return; }
     if (tool === 'rect') { this.drag = { kind: 'rect', p0: this.snapPt(p), moved: false, sx: e.clientX, sy: e.clientY }; return; }
     const itemEl = e.target.closest('[data-item]');
@@ -303,6 +355,11 @@ export class PlanView {
       this.cb.dragging(); return;
     }
     const D = this.drag; if (!D) return;
+    if (D.kind === 'resize') {
+      if (!D.moved && Math.hypot(e.clientX - D.sx, e.clientY - D.sy) < 4) return;
+      if (!D.moved) this.cb.startDrag?.();
+      D.moved = true; this.resizeTo(D, this.pt(e)); this.cb.dragging(); return;
+    }
     if (D.kind === 'pan' || D.kind === 'tap' || D.kind === 'rect') {
       const px = Math.hypot(e.clientX - D.sx, e.clientY - D.sy);
       if (!D.moved && px < 6) return;
@@ -347,11 +404,15 @@ export class PlanView {
     const D = this.drag; this.drag = null;
     if (!D) return;
     if (D.kind === 'tap') { if (!D.moved) this.cb.toolPoint?.(D.p); return; }
+    if (D.kind === 'resize') { if (D.moved) { this.finishResize(D.r); this.cb.changed(); } return; }
     if (D.kind === 'pan') { if (!D.moved) D.onTap?.(); return; }
     if (D.kind === 'rect') {
       const r = this.rectDraft; this.rectDraft = null;
       if (r && r.x1 - r.x0 >= 0.5 && r.z1 - r.z0 >= 0.5) this.cb.rectDrawn?.(r);
-      else { this.cb.dragging(); if (D.moved) this.cb.toast?.('Arrasta de um canto da divisão até ao canto oposto (mínimo 0,50 m).'); }
+      else if (!D.moved) {
+        const hit = [...this.project.rooms].reverse().find(o => D.p0.x >= o.x - 0.05 && D.p0.x <= o.x + o.w + 0.05 && D.p0.z >= o.z - 0.05 && D.p0.z <= o.z + o.l + 0.05);
+        this.cb.selectRoom(hit ? hit.id : null);
+      } else { this.cb.dragging(); if (D.moved) this.cb.toast?.('Arrasta de um canto da divisão até ao canto oposto (mínimo 0,50 m).'); }
       return;
     }
     if (D.moved) this.cb.changed();

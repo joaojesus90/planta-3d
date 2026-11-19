@@ -57,7 +57,7 @@ function sanitize(p) {
 
 // ---------- views ----------
 const plan = new PlanView($('#planHost'), {
-  selectRoom: id => { S.sel.roomId = id; renderPanel(); renderPlan(); },
+  selectRoom: id => { S.sel.roomId = id; renderPanel(); renderPlan(); renderView(); },
   openRoom: id => openRoom(id),
   selectItem: id => { S.sel.itemId = id; if (id) S.tab = 'mobiliario'; renderPanel(); renderPlan(); },
   startDrag: () => snapshot(),
@@ -98,8 +98,9 @@ function renderView() {
   $('#btnWalls').textContent = S.mode === 'house' ? (S.wallCut ? 'Paredes altas' : 'Paredes baixas') : (S.wallAll ? 'Esconder paredes da frente' : 'Mostrar todas as paredes');
   const hint = S.view === 'plan'
     ? (S.mode === 'house' && S.tool === 'calib' ? (S.toolPts.length ? 'Agora toca no segundo ponto' : 'Toca no primeiro ponto de uma medida que conheces')
-      : S.mode === 'house' && S.tool === 'rect' ? 'Arrasta de um canto ao canto oposto da divisão · dois dedos para aproximar'
-      : S.mode === 'house' ? 'Arrasta as divisões para as encaixar · toca duas vezes para abrir · dois dedos para aproximar' : 'Arrasta os móveis · toca num móvel para o editar')
+      : S.mode === 'house' && S.tool === 'rect' ? 'Arrasta de canto a canto para criar · toca numa divisão e puxa os cantos para a ajustar'
+      : S.mode === 'house' && S.sel.roomId ? 'Puxa os cantos ou os lados para redimensionar · arrasta o meio para mover'
+      : S.mode === 'house' ? 'Toca numa divisão para a mover ou redimensionar · toca duas vezes para abrir' : 'Arrasta os móveis · toca num móvel para o editar')
     : 'Arrasta para rodar · dois dedos para aproximar e deslocar';
   $('#hint').textContent = hint;
   if (!v3d && S.view === '3d') $('#hint').textContent = 'O 3D não está disponível neste browser.';
@@ -214,7 +215,7 @@ function traceCard() {
   const n = S.project.rooms.length;
   return `<div class="card"><b>📷 Esboço</b>
     <div class="status"><span>${t.calibrated ? '✅' : '🟡'}</span><span><b>1. Escala</b> ${t.calibrated ? 'acertada.' : 'por acertar: marca dois pontos de uma medida que conheças.'}</span></div>
-    <div class="status"><span>${n ? '✅' : '🟡'}</span><span><b>2. Divisões</b> ${n ? `${n} desenhada${n > 1 ? 's' : ''}.` : 'arrasta de canto a canto por cima de cada divisão.'} As medidas exatas confirmas no assistente.</span></div>
+    <div class="status"><span>${n ? '✅' : '🟡'}</span><span><b>2. Divisões</b> ${n ? `${n} desenhada${n > 1 ? 's' : ''}.` : 'arrasta de canto a canto por cima de cada divisão.'} Para acertar uma divisão ao esboço, toca nela e puxa os cantos ou os lados.</span></div>
     <div class="btns"><button data-act="calib" class="${S.tool === 'calib' ? 'primary' : ''}">📏 Acertar escala</button><button data-act="drawRect" class="${S.tool === 'rect' ? 'primary' : ''}">▭ Desenhar divisão</button>${S.tool ? '<button data-act="toolOff">Terminar</button>' : ''}</div>
     <label class="f" style="margin-top:10px">Visibilidade da foto<input type="range" min="0.15" max="1" step="0.05" value="${t.op}" data-tr="op"></label>
     <label class="f" style="margin-top:6px">Endireitar a foto (${fmt(t.rot)}°)<input type="range" min="-20" max="20" step="0.5" value="${t.rot}" data-tr="rot"></label>
@@ -249,7 +250,7 @@ function housePanel() {
     <div class="btns"><button class="primary" data-act="add">+ Nova divisão</button><button data-act="example">Ver exemplo</button></div></div>`;
   const total = rs.reduce((a, r) => a + r.w * r.l, 0);
   return `<h2>Casa inteira</h2>${traceCard()}
-    <p class="muted">${rs.length} divisões · ${fmt(total)} m² úteis. Na planta, arrasta cada divisão para a encaixar nas outras (as paredes alinham sozinhas). Toca duas vezes para a abrir.</p>
+    <p class="muted">${rs.length} divisões · ${fmt(total)} m² úteis. Na planta, toca numa divisão para a selecionar: arrasta o meio para a mover, ou puxa os cantos e os lados para a redimensionar (as paredes alinham sozinhas). Toca duas vezes para a abrir.</p>
     ${rs.map(r => { const st = styleById(r.style), on = S.sel.roomId === r.id; return `<div class="card ${on ? 'sel' : ''}" data-room="${r.id}">
       <div class="row" style="justify-content:space-between"><div><b>${esc(r.name)}</b><br><small class="muted">${ROOM_TYPES[r.type]?.label || ''} · ${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²</small></div>
       <div style="flex:0">${swatch(st)}</div></div>

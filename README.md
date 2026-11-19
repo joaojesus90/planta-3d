@@ -10,7 +10,7 @@ Simulador simples de divisões: indicas as medidas, as portas e as janelas, esco
 - **Mobiliário automático** para cada tipo de divisão, que respeita a passagem das portas, as janelas e a caixa das portas de correr. Depois podes arrastar, rodar, espelhar, redimensionar, remover ou acrescentar peças.
 - **8 estilos**: Mármore Calacatta e dourado, Mármore Nero e dourado, Microcimento, Escandinavo, Japandi, Zellige verde e latão, Mediterrâneo português e Industrial. Um estilo por divisão.
 - **Partir de um esboço em papel**: tiras uma foto ao esboço, a app realça os traços e põe-na por baixo da planta. Marcas dois pontos de uma medida conhecida para acertar a escala e depois arrastas de canto a canto por cima de cada divisão. O assistente abre já com as medidas e a posição, e tu só confirmas. A foto fica guardada só no teu browser e não vai no link de partilha.
-- **Casa inteira**: arrasta as divisões na planta para as encaixar (as paredes alinham sozinhas) ou escreve a posição em metros.
+- **Casa inteira**: arrasta as divisões na planta para as encaixar, ou puxa os cantos e os lados para as redimensionar por cima do esboço (as paredes alinham sozinhas). Também podes escrever a posição em metros.
 - **Partilhar**: o menu ☰ gera um link com o projeto completo lá dentro. Também podes descarregar ou abrir um ficheiro `.json`.
 - O projeto fica guardado automaticamente no browser.
 
