@@ -139,14 +139,35 @@ function saveTrace() {
   try { if (S.trace) localStorage.setItem(TKEY, JSON.stringify(S.trace)); else localStorage.removeItem(TKEY); }
   catch (e) { toast('A foto é grande demais para ficar guardada no browser: fica só nesta sessão.', 4000); }
 }
-async function loadSketch(file) {
+async function decodeImage(file) {
+  // 1) createImageBitmap respects the photo orientation and copes with large photos
+  if (window.createImageBitmap) {
+    try { const b = await createImageBitmap(file, { imageOrientation: 'from-image' }); return { src: b, w: b.width, h: b.height }; } catch (e) { }
+    try { const b = await createImageBitmap(file); return { src: b, w: b.width, h: b.height }; } catch (e) { }
+  }
+  // 2) classic <img>, with onload (img.decode() fails on some iPhones)
   const url = URL.createObjectURL(file);
   try {
-    const img = new Image(); img.src = url; await img.decode();
-    const max = 1600, f = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.round(img.naturalWidth * f), h = Math.round(img.naturalHeight * f);
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    return { src: img, w: img.naturalWidth, h: img.naturalHeight };
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 5000); }
+}
+async function loadSketch(file) {
+  if (!file) return;
+  toast('A preparar a foto…', 8000);
+  let im;
+  try { im = await decodeImage(file); }
+  catch (e) {
+    const heic = /heic|heif/i.test(file.type + file.name);
+    toast(heic ? 'Este browser não abre fotos HEIC. Tira uma captura de ecrã da foto ou muda a câmara para "Mais compatível" (JPEG).' : 'Não consegui abrir essa imagem. Experimenta outra foto ou uma captura de ecrã.', 6000);
+    return;
+  }
+  try {
+    const max = 1600, f = Math.min(1, max / Math.max(im.w, im.h));
+    const w = Math.round(im.w * f), h = Math.round(im.h * f);
     const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+    const g = c.getContext('2d'); g.drawImage(im.src, 0, 0, w, h);
+    if (im.src.close) im.src.close();
     // greyscale + auto levels, so pencil lines stand out on white paper
     const d = g.getImageData(0, 0, w, h), px = d.data, hist = new Uint32Array(256);
     for (let i = 0; i < px.length; i += 4) { const y = (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11) | 0; px[i] = y; hist[y]++; }
@@ -160,9 +181,9 @@ async function loadSketch(file) {
     S.trace = { img: c.toDataURL('image/jpeg', 0.72), iw: w, ih: h, x: rs.length ? Math.min(...rs.map(r => r.x)) : 0, z: rs.length ? Math.min(...rs.map(r => r.z)) : 0,
       s: 8 / Math.max(w, h), rot: 0, op: 0.6, show: true, calibrated: false };
     saveTrace(); plan.fitView(); setTool('calib');
-  } catch (e) { toast('Não consegui abrir essa imagem.'); }
-  finally { URL.revokeObjectURL(url); }
+  } catch (e) { console.error(e); toast('Não consegui processar a foto (' + (e.message || e) + ').', 6000); }
 }
+$('#sketchInput').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; if (f) loadSketch(f); });
 function askCalibration() {
   const [a, b] = S.toolPts, dist = Math.hypot(a.x - b.x, a.z - b.z);
   const sh = $('#sheet');
@@ -379,7 +400,7 @@ function bindPanel(p) {
     b.onclick = () => {
       const a = b.dataset.act;
       if (a === 'add') openWizard();
-      if (a === 'sketch') { const fi = document.createElement('input'); fi.type = 'file'; fi.accept = 'image/*'; fi.onchange = () => fi.files[0] && loadSketch(fi.files[0]); fi.click(); }
+      if (a === 'sketch') { const fi = $('#sketchInput'); fi.value = ''; fi.click(); }
       if (a === 'calib') setTool(S.tool === 'calib' ? null : 'calib');
       if (a === 'drawRect') setTool(S.tool === 'rect' ? null : 'rect');
       if (a === 'toolOff') setTool(null);
