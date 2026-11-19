@@ -32,7 +32,7 @@ export class PlanView {
     if (key !== this.key) { this.userView = null; this.key = key; }
     this.project = project; this.mode = mode; this.roomId = roomId; this.sel = sel; this.ext = ext;
     const svg = this.svg; svg.innerHTML = '';
-    const rooms = mode === 'house' ? project.rooms : project.rooms.filter(r => r.id === roomId);
+    const rooms = mode === 'house' ? project.rooms : project.rooms.filter(r => r.id === roomId || (ext.groupIds || []).includes(r.id));
     const tr = mode === 'house' && ext.trace && ext.trace.show ? ext.trace : null;
     if (!rooms.length && !tr) { this.fit = { x0: 0, z0: 0, w: 10, h: 6 }; svg.setAttribute('viewBox', '0 0 10 6'); el('text', { x: 5, y: 3, 'font-size': 0.35, 'text-anchor': 'middle', fill: '#8a8f94' }, svg).textContent = 'Ainda não há divisões. Toca em “+ Divisão”.'; return; }
     const xs = rooms.flatMap(r => [r.x, r.x + r.w]), zs = rooms.flatMap(r => [r.z, r.z + r.l]);
@@ -57,7 +57,7 @@ export class PlanView {
       if (mode === 'house' && sel?.roomId === r.id) el('rect', { x: r.x, y: r.z, width: r.w, height: r.l, fill: 'rgba(47,111,143,.08)', stroke: '#2f6f8f', 'stroke-width': 0.03 }, gR);
     }
     // furniture (both modes; non-interactive in house mode)
-    for (const r of rooms) this.drawItems(r, svg, mode === 'room');
+    for (const r of rooms) this.drawItems(r, svg, mode === 'room' && r.id === roomId);
     // walls
     const wallG = el('g', { fill: '#3a3f45' }, svg);
     for (const r of rooms) {
@@ -80,7 +80,7 @@ export class PlanView {
         const t2 = el('text', { x: r.x + r.w / 2, y: r.z + r.l / 2 + fs * 1.2, 'font-size': fs2, 'text-anchor': 'middle', fill: '#555', 'pointer-events': 'none', 'paint-order': 'stroke', stroke: 'rgba(255,255,255,.85)', 'stroke-width': this.k * 0.1 }, svg);
         t2.textContent = `${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²`;
       }
-    } else this.drawDims(rooms[0], svg);
+    } else this.drawDims(rooms.find(r => r.id === roomId) || rooms[0], svg);
     if (mode === 'house' && this.ext?.tool !== 'calib') this.drawHandles(svg);
     this.drawTool(svg);
   }
@@ -193,6 +193,8 @@ export class PlanView {
     const bad = new Set(validate(r));
     for (const d of r.doors) {
       const col = bad.has(d.id) ? '#c83228' : '#8b6b45';
+      if (d.kind === 'aberto') { band(d.wall, d.off, d.off + d.width, -T - 0.002, 0.004, { fill: r.type === 'wc' ? '#f1f5f7' : '#faf8f4', 'fill-opacity': this.ext?.trace && this.mode === 'house' ? 0.55 : 1 });
+        line(P(d.wall, d.off, -T / 2), P(d.wall, d.off + d.width, -T / 2), { stroke: '#9aa3ab', 'stroke-width': 0.01, 'stroke-dasharray': '0.05 0.05' }); continue; }
       band(d.wall, d.off, d.off + d.width, -T, 0.002, { fill: '#fff' });
       if (d.kind === 'batente') {
         const hs = d.hinge === 'end' ? d.off + d.width : d.off, os = d.hinge === 'end' ? d.off : d.off + d.width;
@@ -220,10 +222,11 @@ export class PlanView {
       line(P(w.wall, w.off, -T / 4), P(w.wall, w.off + w.width, -T / 4), { stroke: col, 'stroke-width': 0.012 });
     }
     // draggable areas (room view, or the selected room in the house view)
-    const active = this.mode === 'room' || this.sel?.roomId === r.id;
+    const active = this.mode === 'room' ? r.id === this.roomId : this.sel?.roomId === r.id;
     if (!active || this.ext?.tool === 'calib' || this.ext?.tool === 'photo') return;
     const k = this.k;
     for (const o of [...r.doors, ...r.windows]) {
+      if (o.kind === 'aberto') continue;
       const on = this.sel?.opId === o.id;
       band(o.wall, o.off, o.off + o.width, -T - k * 0.12, Math.max(0.25, k * 0.35), { fill: on ? 'rgba(217,72,15,.16)' : 'rgba(47,111,143,.06)', stroke: on ? '#d9480f' : 'rgba(47,111,143,.35)',
         'stroke-width': k * (on ? 0.035 : 0.02), 'stroke-dasharray': on ? '' : `${k * 0.08} ${k * 0.06}`, 'data-op': o.id, 'data-oroom': r.id, style: 'cursor:grab' });
@@ -314,7 +317,7 @@ export class PlanView {
     const L = (x, y, s) => { el('circle', { cx: x, cy: y, r: fs * 0.85, fill: '#2f6f8f' }, svg); tx(x, y + fs * 0.35, s, 0, { fill: '#fff', 'font-weight': 700 }); };
     L(r.x + r.w / 2, r.z - 0.75, 'A'); L(r.x + r.w + 0.4, r.z + r.l / 2, 'B'); L(r.x + r.w / 2, r.z + r.l + 0.4, 'C'); L(r.x - 0.78, r.z + r.l / 2, 'D');
     // opening distances
-    for (const op of [...r.doors, ...r.windows]) this.drawOpLabels(r, op, svg, op.id === this.sel?.opId);
+    for (const op of [...r.doors, ...r.windows]) if (op.kind !== 'aberto') this.drawOpLabels(r, op, svg, op.id === this.sel?.opId);
     // distances of the selected item to the walls
     const it = r.items.find(i => i.id === this.sel?.itemId);
     if (it) {

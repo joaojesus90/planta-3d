@@ -3,6 +3,7 @@ import { PlanView, traceToWorld } from './plan.js';
 import { View3D } from './scene3d.js';
 
 const { ROOM_TYPES, WALL_INFO, DOOR_KINDS, CATALOG, STYLES, T, newRoom, newDoor, newWindow, autoFurnish, addItemAuto,
+  neighbours, isJoined, joinRooms, unjoinRooms, syncJoins, roomGroup,
   wallLength, styleById, r2, exampleProject, itemRect, doorZones, fits, uid } = Mdl;
 
 const $ = s => document.querySelector(s);
@@ -81,6 +82,7 @@ function openRoom(id) { S.tool = null; S.toolPts = []; S.mode = 'room'; S.roomId
 function openHouse() { S.mode = 'house'; S.sel.itemId = null; changed({ save: false }); }
 
 function changed({ save: sv = true } = {}) {
+  syncJoins(S.project);
   if (sv) save();
   $('#projName').value = S.project.name;
   renderChips(); renderView(); renderPanel(); renderPlan();
@@ -116,7 +118,8 @@ function renderView() {
   if (!v3d && S.view === '3d') $('#hint').textContent = 'O 3D não está disponível neste browser.';
 }
 
-function renderPlan() { plan.render(S.project, S.mode, S.roomId, S.sel, { trace: S.trace, tool: S.mode === 'house' ? S.tool : null, toolPts: S.toolPts }); renderPlanTools(); }
+function groupIds() { const r = room(); return S.mode === 'room' && r ? roomGroup(S.project, r).map(x => x.id).filter(id => id !== r.id) : []; }
+function renderPlan() { plan.render(S.project, S.mode, S.roomId, S.sel, { trace: S.trace, tool: S.mode === 'house' ? S.tool : null, toolPts: S.toolPts, groupIds: groupIds() }); renderPlanTools(); }
 
 function selRoomForTools() { return S.mode === 'room' ? room() : S.project.rooms.find(r => r.id === S.sel.roomId); }
 function selOp() { const r = selRoomForTools(); const o = r && [...r.doors, ...r.windows].find(x => x.id === S.sel.opId); return o ? { r, o, isDoor: r.doors.includes(o) } : null; }
@@ -175,11 +178,13 @@ function renderPlanTools() {
     if (S.tool) a += `<button data-tool="none">✓ Terminar</button>`;
   }
   if (r && S.tool !== 'calib' && S.tool !== 'photo') a += `<button data-tool="addDoor">+ Porta</button><button data-tool="addWin">+ Janela</button>`;
+  if (r && S.mode === 'house' && !S.tool && neighbours(S.project, r).length) a += `<button data-tool="join">🔗 Juntar</button>`;
   a += `<button data-tool="fit" title="Ajustar vista">⤢</button>`;
   host.innerHTML = `<div class="ov-row scroll">${a}</div>` + (so ? `<div class="ov-row scroll">${opQuickHtml(so.o, so.isDoor)}</div>` : '');
   host.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => {
     const t = b.dataset.tool;
     if (t === 'fit') { plan.fitView(); renderPlan(); return; }
+    if (t === 'join') { openJoinSheet(r); return; }
     if (t === 'addDoor' || t === 'addWin') {
       snapshot(); const o = addOpening(r, t === 'addDoor'); if (!o) return;
       S.sel.opId = o.id; if (r.auto) autoFurnish(r); changed();
@@ -193,6 +198,15 @@ function renderPlanTools() {
     if (so.r.auto) autoFurnish(so.r);
     changed();
   });
+}
+
+function openJoinSheet(r) {
+  const sh = $('#sheet');
+  sh.innerHTML = `<h2>Juntar ${esc(r.name)}</h2><p class="muted">Escolhe a divisão encostada com que queres juntar. A parede entre as duas desaparece: é assim que se faz uma divisão em L ou um espaço aberto.</p>${joinHtml(r)}<div class="navbtns"><button data-c="close">Fechar</button></div>`;
+  $('#modal').hidden = false;
+  sh.querySelector('[data-c=close]').onclick = closeModal;
+  sh.querySelectorAll('[data-join],[data-unjoin]').forEach(b => b.addEventListener('click', () => setTimeout(closeModal, 0)));
+  bindJoin(sh, r);
 }
 
 function setTool(t) {
@@ -296,7 +310,7 @@ function traceCard() {
 function rebuild3D() {
   if (!v3d || S.view !== '3d' || !S.dirty3d) return;
   S.dirty3d = false;
-  const rooms = S.mode === 'house' ? S.project.rooms : [room()].filter(Boolean);
+  const rooms = S.mode === 'house' ? S.project.rooms : (room() ? roomGroup(S.project, room()) : []);
   if (!rooms.length) { v3d.build([{ ...newRoom({ w: 0.01, l: 0.01 }), h: 0.01 }]); return; }
   v3d.build(rooms, { cut: S.mode === 'house' && S.wallCut ? 1.15 : null });
   v3d.wallMode = S.mode === 'room' && S.wallAll ? 'all' : 'auto';
@@ -315,6 +329,24 @@ function renderPanel() {
 function swatch(st) { return `<span class="swatch-mini">${st.sw.map(c => `<i style="background:${c}"></i>`).join('')}</span>`; }
 function inputM(label, f, v, extra = '') { return `<label class="f">${label}<span class="unit"><input data-f="${f}" inputmode="decimal" value="${fmt(v)}" ${extra}></span></label>`; }
 
+function joinHtml(r) {
+  const ns = neighbours(S.project, r);
+  if (!ns.length) return `<p class="muted" style="margin:6px 0 0">Para uma divisão em L ou um espaço aberto (sala com cozinha), desenha a outra parte encostada a esta e depois junta-as aqui.</p>`;
+  return `<div class="btns">${ns.map(n => isJoined(r, n) ? `<button data-unjoin="${n.id}">✂ Separar de ${esc(n.name)}</button>` : `<button data-join="${n.id}">🔗 Juntar a ${esc(n.name)}</button>`).join('')}</div>
+    <p class="muted" style="margin:6px 0 0">Juntar tira a parede entre as duas: serve para divisões em L e espaços abertos.</p>`;
+}
+function doJoin(a, b) {
+  snapshot();
+  if (!joinRooms(a, b)) { toast('Estas divisões não estão encostadas.'); return; }
+  if (a.type === b.type) { const small = a.w * a.l < b.w * b.l ? a : b; small.items = []; small.auto = false; }
+  [a, b].forEach(r => { if (r.auto) autoFurnish(r); });
+  changed(); toast(`${a.name} e ${b.name} estão juntas: a parede entre elas desapareceu.`, 4000);
+}
+function bindJoin(el, r) {
+  el.querySelectorAll('[data-join]').forEach(b => b.onclick = () => doJoin(r, S.project.rooms.find(x => x.id === b.dataset.join)));
+  el.querySelectorAll('[data-unjoin]').forEach(b => b.onclick = () => { snapshot(); unjoinRooms(r, S.project.rooms.find(x => x.id === b.dataset.unjoin)); changed(); });
+}
+
 function housePanel() {
   const rs = S.project.rooms;
   if (!rs.length) return `${traceCard()}<div class="card"><h2>Começa a tua casa</h2><p class="muted">Cria a primeira divisão: eu pergunto-te as medidas, as portas, as janelas e o estilo.</p>
@@ -325,7 +357,7 @@ function housePanel() {
     ${rs.map(r => { const st = styleById(r.style), on = S.sel.roomId === r.id; return `<div class="card ${on ? 'sel' : ''}" data-room="${r.id}">
       <div class="row" style="justify-content:space-between"><div><b>${esc(r.name)}</b><br><small class="muted">${ROOM_TYPES[r.type]?.label || ''} · ${fmt(r.w)} × ${fmt(r.l)} m · ${fmt(r.w * r.l)} m²</small></div>
       <div style="flex:0">${swatch(st)}</div></div>
-      ${on ? `<div class="row" style="margin-top:8px">${inputM('Posição X (a partir da esquerda)', 'x', r.x)}${inputM('Posição Y (a partir de cima)', 'z', r.z)}</div>` : ''}
+      ${on ? `<div class="row" style="margin-top:8px">${inputM('Posição X (a partir da esquerda)', 'x', r.x)}${inputM('Posição Y (a partir de cima)', 'z', r.z)}</div>${joinHtml(r)}` : ''}
       <div class="btns"><button class="primary" data-act="open">Abrir</button><button data-act="select">${on ? 'Selecionada' : 'Selecionar'}</button><button data-act="dup">Duplicar</button><button class="danger" data-act="del">Remover</button></div>
     </div>`; }).join('')}
     <div class="btns"><button class="primary" data-act="add">+ Nova divisão</button><button data-act="allStyle">Mesmo estilo em todas</button></div>`;
@@ -353,6 +385,7 @@ function medidasTab(r) {
   </div>
   <div class="card"><b>Posição na casa</b>
     <div class="row" style="margin-top:8px">${inputM('X (a partir da esquerda)', 'x', r.x)}${inputM('Y (a partir de cima)', 'z', r.z)}</div></div>
+  <div class="card"><b>Divisão em L ou espaço aberto</b>${joinHtml(r)}</div>
   <div class="btns"><button data-act="refurnish">Redistribuir mobiliário</button><button data-act="dupRoom">Duplicar divisão</button><button class="danger" data-act="delRoom">Remover divisão</button></div>`;
 }
 
@@ -384,7 +417,8 @@ function openingEditor(r, o, i, isDoor) {
 }
 
 function aberturasTab(r) {
-  return `<p class="muted">Na <b>Planta</b>, arrasta cada porta ou janela ao longo das paredes: as distâncias às paredes vão aparecendo. Toca numa para mudar o tipo, o lado de abertura ou a largura.</p><h3>Portas</h3>${r.doors.map((d, i) => openingEditor(r, d, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
+  const doors = r.doors.filter(d => d.kind !== 'aberto'), links = r.doors.filter(d => d.kind === 'aberto');
+  return `${links.length ? `<p class="muted">🔗 Sem parede para: ${links.map(d => esc(S.project.rooms.find(x => x.id === d.link)?.name || '')).join(', ')}.</p>` : ''}<p class="muted">Na <b>Planta</b>, arrasta cada porta ou janela ao longo das paredes: as distâncias às paredes vão aparecendo. Toca numa para mudar o tipo, o lado de abertura ou a largura.</p><h3>Portas</h3>${doors.map((d, i) => openingEditor(r, d, i, true)).join('') || '<p class="muted">Sem portas.</p>'}
     <div class="btns"><button data-act="addDoor">+ Adicionar porta</button></div>
     <h3>Janelas</h3>${r.windows.map((w, i) => openingEditor(r, w, i, false)).join('') || '<p class="muted">Sem janelas.</p>'}
     <div class="btns"><button data-act="addWin">+ Adicionar janela</button></div>
@@ -470,6 +504,7 @@ function bindPanel(p) {
         if (a === 'del' && confirmTwice(b, 'del' + rr.id)) { snapshot(); S.project.rooms.splice(S.project.rooms.indexOf(rr), 1); changed(); }
       });
       card.querySelectorAll('[data-f]').forEach(inp => inp.onchange = () => { snapshot(); rr[inp.dataset.f] = r2(num(inp.value)); changed(); });
+      bindJoin(card, rr);
     });
   }
   p.querySelectorAll('[data-act]').forEach(b => {
@@ -508,6 +543,7 @@ function bindPanel(p) {
     };
   });
   if (!r) return;
+  bindJoin(p, r);
   p.querySelectorAll('.list-item[data-item]').forEach(li => li.onclick = () => { S.sel.itemId = li.dataset.item; renderPanel(); renderPlan(); });
   p.querySelectorAll('[data-f]').forEach(inp => {
     if (inp.closest('[data-op]')) return;

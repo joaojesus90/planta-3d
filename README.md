@@ -11,6 +11,7 @@ Simulador simples de divisões: indicas as medidas, as portas e as janelas, esco
 - **8 estilos**: Mármore Calacatta e dourado, Mármore Nero e dourado, Microcimento, Escandinavo, Japandi, Zellige verde e latão, Mediterrâneo português e Industrial. Um estilo por divisão.
 - **Partir de um esboço em papel**: tiras uma foto ao esboço, a app realça os traços e põe-na por baixo da planta. Acertas a escala marcando uma medida conhecida, ou crias uma divisão com as medidas reais e encaixas a foto por cima dela (mover e redimensionar à proporção pelos cantos). Depois arrastas de canto a canto por cima de cada divisão. O assistente abre já com as medidas e a posição, e tu só confirmas. A foto fica guardada só no teu browser e não vai no link de partilha.
 - **Casa inteira**: arrasta as divisões na planta para as encaixar, ou puxa os cantos e os lados para as redimensionar por cima do esboço (as paredes alinham sozinhas). Também podes escrever a posição em metros.
+- **Divisões em L e espaços abertos**: desenhas duas partes retangulares encostadas e juntas-as (🔗 Juntar). A parede entre elas desaparece, na planta e no 3D, e o chão fica contínuo. Serve também para salas com cozinha em open space.
 - **Partilhar**: o menu ☰ gera um link com o projeto completo lá dentro. Também podes descarregar ou abrir um ficheiro `.json`.
 - O projeto fica guardado automaticamente no browser.
 

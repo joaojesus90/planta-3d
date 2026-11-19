@@ -27,6 +27,7 @@ export const DOOR_KINDS = {
   correr_emb: 'De correr embutida',
   correr_ext: 'De correr à vista',
   vao:        'Só vão (sem porta)',
+  aberto:     'Sem parede (divisões juntas)',
 };
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -205,6 +206,7 @@ function sideRect(it) {
 export function doorZones(room) {
   const zones = [];
   for (const d of room.doors) {
+    if (d.kind === 'aberto') { zones.push({ type: 'open', r: wallBand(room, d.wall, d.off, d.off + d.width, 0.05) }); continue; }
     const depth = d.kind === 'batente' && d.swing === 'in' ? Math.max(d.width, 0.8) : 0.8;
     zones.push({ type: 'door', r: wallBand(room, d.wall, d.off - 0.05, d.off + d.width + 0.05, depth) });
     if (d.kind === 'correr_emb') {
@@ -233,6 +235,7 @@ export function fits(room, it, others, zones) {
   for (const z of zones) {
     if (z.type === 'door' && overlap(r, z.r)) return false;
     if (z.type === 'pocket' && cat.mount && overlap(r, z.r)) return false;
+    if (z.type === 'open' && cat.wall && overlap(r, z.r)) return false;
     if (z.type === 'window' && cat.tall && cat.h > z.sill && overlap(r, z.r)) return false;
   }
   for (const o of others) {
@@ -464,6 +467,49 @@ export function validateOpenings(room) {
     if (o.off < -EPS || o.off + o.width > L + EPS) problems.push(o.id);
   }
   return problems;
+}
+
+// ---------- Joined rooms (L shapes, open spaces) ----------
+// Shared wall between two rooms placed side by side (with one wall thickness between them).
+export function sharedWall(a, b, tol = 0.03) {
+  const ov = (a0, a1, b0, b1) => [Math.max(a0, b0), Math.min(a1, b1)];
+  const res = (wall, base, [s0, s1]) => (s1 - s0 >= 0.3 ? { wall, off: r2(s0 - base), width: r2(s1 - s0) } : null);
+  if (Math.abs(b.x - (a.x + a.w + T)) < tol) return res('B', a.z, ov(a.z, a.z + a.l, b.z, b.z + b.l));
+  if (Math.abs(a.x - (b.x + b.w + T)) < tol) return res('D', a.z, ov(a.z, a.z + a.l, b.z, b.z + b.l));
+  if (Math.abs(b.z - (a.z + a.l + T)) < tol) return res('C', a.x, ov(a.x, a.x + a.w, b.x, b.x + b.w));
+  if (Math.abs(a.z - (b.z + b.l + T)) < tol) return res('A', a.x, ov(a.x, a.x + a.w, b.x, b.x + b.w));
+  return null;
+}
+export function neighbours(project, a) { return project.rooms.filter(b => b !== a && sharedWall(a, b)); }
+export function isJoined(a, b) { return a.doors.some(d => d.kind === 'aberto' && d.link === b.id) || b.doors.some(d => d.kind === 'aberto' && d.link === a.id); }
+export function joinRooms(a, b) {
+  const sw = sharedWall(a, b); if (!sw || isJoined(a, b)) return false;
+  a.doors.push(newDoor({ ...sw, kind: 'aberto', height: Math.max(a.h, b.h), link: b.id }));
+  return true;
+}
+export function unjoinRooms(a, b) {
+  a.doors = a.doors.filter(d => !(d.kind === 'aberto' && d.link === b.id));
+  b.doors = b.doors.filter(d => !(d.kind === 'aberto' && d.link === a.id));
+}
+// Keep the open walls in step when joined rooms are moved or resized; drop them if the rooms no longer touch.
+export function syncJoins(project) {
+  for (const a of project.rooms) {
+    a.doors = a.doors.filter(d => {
+      if (d.kind !== 'aberto' || !d.link) return true;
+      const b = project.rooms.find(r => r.id === d.link); if (!b) return false;
+      const sw = sharedWall(a, b); if (!sw) return false;
+      Object.assign(d, sw, { height: Math.max(a.h, b.h) }); return true;
+    });
+  }
+}
+// All rooms connected to this one through open walls.
+export function roomGroup(project, a) {
+  const out = [a], q = [a];
+  while (q.length) {
+    const r = q.pop();
+    for (const b of project.rooms) if (!out.includes(b) && isJoined(r, b)) { out.push(b); q.push(b); }
+  }
+  return out;
 }
 
 // ---------- Example project: the 1,70 × 2,10 bathroom plus neighbours ----------

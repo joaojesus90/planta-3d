@@ -224,6 +224,18 @@ export class View3D {
   }
 
   buildDoor(room, d, g, M, Hc) {
+    if (d.kind === 'aberto') {
+      // fill the floor where the wall used to be
+      const f = wallFrame(room, d.wall), style = styleById(room.style);
+      const spec = room.type === 'wc' || room.type === 'cozinha' ? style.wetFloor : style.dryFloor;
+      const P = (s, n) => [f.p0[0] + f.u[0] * s + f.n[0] * n, f.p0[1] + f.u[1] * s + f.n[1] * n];
+      const [ax, az] = P(d.off, -T - 0.002), [bx, bz] = P(d.off + d.width, 0.002);
+      const w = Math.abs(bx - ax), l = Math.abs(bz - az);
+      const m = specMaterial(spec, w, l); m._own = true;
+      const pl = new THREE.Mesh(new THREE.PlaneGeometry(w, l), m);
+      pl.rotation.x = -Math.PI / 2; pl.position.set((ax + bx) / 2, 0.001, (az + bz) / 2); pl.receiveShadow = true; g.add(pl);
+      return;
+    }
     const f = wallFrame(room, d.wall);
     const P = (s, n = 0) => [f.p0[0] + f.u[0] * s + f.n[0] * n, f.p0[1] + f.u[1] * s + f.n[1] * n];
     const piece = (s0, s1, n0, n1, y0, y1, mat) => {
